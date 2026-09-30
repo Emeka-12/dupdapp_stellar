@@ -75,6 +75,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
+      admin_auth_id: ${{ steps.deploy.outputs.admin_auth_id }}
       admin_timelock_id: ${{ steps.deploy.outputs.admin_timelock_id }}
       batch_payments_id: ${{ steps.deploy.outputs.batch_payments_id }}
       fee_calculator_id: ${{ steps.deploy.outputs.fee_calculator_id }}
@@ -84,6 +85,7 @@ jobs:
       multisig_admin_id: ${{ steps.deploy.outputs.multisig_admin_id }}
       payment_escrow_id: ${{ steps.deploy.outputs.payment_escrow_id }}
       payment_request_id: ${{ steps.deploy.outputs.payment_request_id }}
+      platform_stats_id: ${{ steps.deploy.outputs.platform_stats_id }}
       rbac_access_id: ${{ steps.deploy.outputs.rbac_access_id }}
       reconciliation_id: ${{ steps.deploy.outputs.reconciliation_id }}
       settlement_ledger_id: ${{ steps.deploy.outputs.settlement_ledger_id }}
@@ -230,6 +232,8 @@ jobs:
             --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"
 
           # --- admin only ----------------------------------------------------
+          deploy_contract admin_auth            wasm/admin_auth.wasm \
+            --super_admin "$DEPLOY_ADMIN"
           deploy_contract admin_timelock        wasm/admin_timelock.wasm \
             --admin "$DEPLOY_ADMIN"
           deploy_contract merchant_registry     wasm/merchant_registry.wasm \
@@ -242,6 +246,8 @@ jobs:
             --admin "$DEPLOY_ADMIN"
           deploy_contract rbac_access           wasm/rbac_access.wasm \
             --super_admin "$RBAC_SUPER_ADMIN"
+          deploy_contract platform_stats        wasm/platform_stats.wasm \
+            --admin "$DEPLOY_ADMIN"
 
           # --- multi-argument constructors -----------------------------------
           deploy_contract stellar_confirmations wasm/stellar_confirmations.wasm \
@@ -285,6 +291,7 @@ jobs:
           echo "### Testnet contract IDs" >> "$GITHUB_STEP_SUMMARY"
           echo "| Contract | ID |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| admin_auth | ${{ steps.deploy.outputs.admin_auth_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| admin_timelock | ${{ steps.deploy.outputs.admin_timelock_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| batch_payments | ${{ steps.deploy.outputs.batch_payments_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| fee_calculator | ${{ steps.deploy.outputs.fee_calculator_id }} |" >> "$GITHUB_STEP_SUMMARY"
@@ -294,6 +301,7 @@ jobs:
           echo "| multisig_admin | ${{ steps.deploy.outputs.multisig_admin_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| payment_escrow | ${{ steps.deploy.outputs.payment_escrow_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| payment_request | ${{ steps.deploy.outputs.payment_request_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| platform_stats | ${{ steps.deploy.outputs.platform_stats_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| rbac_access | ${{ steps.deploy.outputs.rbac_access_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| reconciliation | ${{ steps.deploy.outputs.reconciliation_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| settlement_ledger | ${{ steps.deploy.outputs.settlement_ledger_id }} |" >> "$GITHUB_STEP_SUMMARY"
@@ -451,6 +459,8 @@ jobs:
             --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"
 
           # --- admin only ----------------------------------------------------
+          deploy_contract admin_auth            wasm/admin_auth.wasm \
+            --super_admin "$DEPLOY_ADMIN"
           deploy_contract admin_timelock        wasm/admin_timelock.wasm \
             --admin "$DEPLOY_ADMIN"
           deploy_contract merchant_registry     wasm/merchant_registry.wasm \
@@ -463,6 +473,8 @@ jobs:
             --admin "$DEPLOY_ADMIN"
           deploy_contract rbac_access           wasm/rbac_access.wasm \
             --super_admin "$RBAC_SUPER_ADMIN"
+          deploy_contract platform_stats        wasm/platform_stats.wasm \
+            --admin "$DEPLOY_ADMIN"
 
           # --- multi-argument constructors -----------------------------------
           deploy_contract stellar_confirmations wasm/stellar_confirmations.wasm \
@@ -506,6 +518,7 @@ jobs:
           echo "### Mainnet contract IDs (${{ github.ref_name }})" >> "$GITHUB_STEP_SUMMARY"
           echo "| Contract | ID |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| admin_auth | ${{ steps.deploy.outputs.admin_auth_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| admin_timelock | ${{ steps.deploy.outputs.admin_timelock_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| batch_payments | ${{ steps.deploy.outputs.batch_payments_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| fee_calculator | ${{ steps.deploy.outputs.fee_calculator_id }} |" >> "$GITHUB_STEP_SUMMARY"
@@ -515,6 +528,7 @@ jobs:
           echo "| multisig_admin | ${{ steps.deploy.outputs.multisig_admin_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| payment_escrow | ${{ steps.deploy.outputs.payment_escrow_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| payment_request | ${{ steps.deploy.outputs.payment_request_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| platform_stats | ${{ steps.deploy.outputs.platform_stats_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| rbac_access | ${{ steps.deploy.outputs.rbac_access_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| reconciliation | ${{ steps.deploy.outputs.reconciliation_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| settlement_ledger | ${{ steps.deploy.outputs.settlement_ledger_id }} |" >> "$GITHUB_STEP_SUMMARY"
