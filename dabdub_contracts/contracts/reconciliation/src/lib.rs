@@ -157,7 +157,9 @@ impl ReconciliationContract {
     /// Both behaviours are preserved for existing callers. New integrations
     /// should use [`Self::verify_settlement_proof`], which takes the batch ID
     /// the proof was generated against and returns `true` for a valid proof.
-    #[deprecated(note = "inverted return value — use verify_settlement_proof instead")]
+    #[deprecated(
+        note = "inverted return value and latest-batch-only semantics — use verify_settlement_proof instead"
+    )]
     pub fn verify_settlement(env: Env, payment_id: BytesN<32>, proof: Vec<MerkleProofNode>) -> bool {
         Self::require_proof_depth(&proof);
         let batch: ReconciliationBatch = env
