@@ -188,6 +188,33 @@ impl BatchPaymentContract {
             };
             env.storage().persistent().set(&DataKey::Payment(id_bytes.clone()), &record);
 
+            let record = PaymentRecord {
+                id: id_bytes.clone(),
+                amount: item.amount,
+                memo: item.memo.clone(),
+                merchant: merchant.clone(),
+            };
+            env.storage()
+                .persistent()
+                .set(&DataKey::Payment(id_bytes.clone()), &record);
+
+            // Emit PaymentCreated event — one per batch entry.
+            env.events().publish(
+                (soroban_sdk::Symbol::new(&env, "PaymentCreated"),),
+                (id_bytes.clone(), merchant.clone(), item.amount, item.memo.clone()),
+            );
+
+            payment_ids.push_back(id_bytes);
+        }
+
+        let final_counter = counter + count as u64;
+        env.storage().instance().set(&DataKey::Counter, &final_counter);
+
+        payment_ids
+    }
+
+    /// Returns the on-chain record for a previously created payment, if any.
+    pub
             env.events().publish(
                 (soroban_sdk::Symbol::new(&env, "PaymentCreated"),),
                 (id_bytes.clone(), merchant.clone(), item.amount, item.memo.clone()),
