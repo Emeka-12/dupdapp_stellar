@@ -94,6 +94,19 @@ fn test_volume_resets_after_30_days_by_ledger_count() {
     env.ledger().with_mut(|li| li.sequence_number += 172_800);
 
     let (_, _, bps_after_reset) =
+        client.calculate_fee(
+fn test_volume_resets_after_30_days_by_ledger_count() {
+    let (env, client, _admin, merchant, settlement_caller) = setup_env();
+
+    client.calculate_fee(&settlement_caller, &merchant, &2_000); // puts merchant into 120 bps tier
+    let (_, _, bps_before_reset) =
+        client.calculate_fee(&settlement_caller, &merchant, &1);
+
+    assert_eq!(bps_before_reset, 120);
+
+    env.ledger().with_mut(|li| li.sequence_number += 172_800);
+
+    let (_, _, bps_after_reset) =
         client.calculate_fee(&settlement_caller, &merchant, &100);
     assert_eq!(bps_after_reset, 150);
 }
@@ -201,6 +214,33 @@ fn test_admin_can_set_min_fee() {
 }
 
 #[test]
+fn test_zero_bps_tier_still_charges_minimum_floor() {
+    let (env, client, admin, merchant, settlement_caller) = setup_env();
+
+    // Configure a zero-bps tier so the merchant would otherwise pay nothing.
+    let zero_tiers = vec![
+        &env,
+        FeeTier {
+            threshold_usdc: 0,
+            fee_bps: 0,
+        },
+    ];
+    client.set_fee_tiers(&admin, &zero_tiers);
+
+    // Default minimum floor is 10 bps.
+    assert_eq!(client.get_min_fee(), 10);
+
+    let amount: i128 = 10_000;
+    let (fee, net, bps) = client.calculate_fee(&settlement_caller, &merchant, &amount);
+
+    // The applied rate must be floored at the minimum, not the tier's 0 bps.
+    assert_eq!(bps, 10);
+    assert_eq!(fee, amount * 10 / 10_000);
+    assert_eq!(net, amount - fee);
+    assert!(fee > 0);
+}
+
+#[test]
 #[should_panic(expected = "Unauthorized caller")]
 fn test_unauthorized_caller_cannot_calculate_fee() {
     let (env, client, _admin, merchant) = setup_env();
@@ -242,6 +282,20 @@ fn test_admin_can_set_settlement_caller() {
     client.set_settlement_caller(&admin, &new_settlement);
     // Confirm the new settlement caller is accepted by calculate_fee
     let merchant = Address::generate(&env);
+    let (fee, net, bps) = client.calculate_fee(&new_settlement, &merchant, &500);
+    assert_eq!(bps, 150);
+    assert!(fee > 0);
+    assert!(net > 0);
+}
+
+#[test]
+#[should_panic(expected = "caller is not the authorized settlement contract")]
+fn test_non_settlement_caller_cannot_calculate_fee() {
+    let (env, client, _admin, merchant, _settlement_caller) = setup_env();
+    let attacker = Address::generate(&env);
+
+    client.calculate_fee(&attacker, &merchant, &1_000);
+= Address::generate(&env);
     let (fee, net, bps) = client.calculate_fee(&new_settlement, &merchant, &500);
     assert_eq!(bps, 150);
     assert!(fee > 0);
@@ -307,4 +361,6 @@ proptest! {
         prop_assert!(net >= 0);
         prop_assert_eq!(fee + net, amount);
     }
+}
+
 }
