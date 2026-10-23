@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contractimpl, contracttype, symbol_short, Address, Env, String, Symbol,
+    contract, contractimpl, contracttype, symbol_short, Address, Env, String,
 };
 
 #[contracttype]
@@ -13,6 +13,7 @@ pub enum PaymentStatus {
     Settled = 3,
     Failed = 4,
     Expired = 5,
+    Cancelled = 6,
 }
 
 #[contracttype]
@@ -92,6 +93,28 @@ impl PaymentRequestContract {
         );
     }
 
+    /// Cancel a payment request before it has been finalized.
+    pub fn cancel(env: Env, id: String, merchant: Address) {
+        merchant.require_auth();
+        let key = DataKey::Payment(id.clone());
+        let mut payment: Payment = env.storage().persistent().get(&key).expect("Payment not found");
+
+        if payment.merchant != merchant {
+            panic!("Only the payment merchant can cancel the request");
+        }
+        if payment.status != PaymentStatus::Pending && payment.status != PaymentStatus::Confirmed {
+            panic!("Cannot cancel a finalized payment");
+        }
+
+        payment.status = PaymentStatus::Cancelled;
+        env.storage().persistent().set(&key, &payment);
+
+        env.events().publish(
+            (symbol_short!("payment"), id, symbol_short!("cancelled")),
+            PaymentStatus::Cancelled,
+        );
+    }
+
     /// Move payment to settling state (initiate payout to merchant).
     pub fn set_settling(env: Env, id: String) {
         let key = DataKey::Payment(id.clone());
@@ -134,7 +157,10 @@ impl PaymentRequestContract {
         let key = DataKey::Payment(id.clone());
         let mut payment: Payment = env.storage().persistent().get(&key).expect("Payment not found");
 
-        if payment.status == PaymentStatus::Settled || payment.status == PaymentStatus::Expired {
+        if payment.status == PaymentStatus::Settled
+            || payment.status == PaymentStatus::Expired
+            || payment.status == PaymentStatus::Cancelled
+        {
             panic!("Cannot fail a finalized payment");
         }
 

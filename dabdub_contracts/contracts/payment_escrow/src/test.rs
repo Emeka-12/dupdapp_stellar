@@ -41,7 +41,7 @@ fn deploy_escrow(
             usdc,
             &DEFAULT_PAYMENT_TTL,
             &registry,
-            emergency_signers,
+            emergency_signers.clone(),
             emergency_treasury,
             &EMERGENCY_COOLDOWN_LEDGERS,
         ),
@@ -596,6 +596,7 @@ fn test_set_registry_unauthorized() {
 #[test]
 fn test_deposit_allowed_when_registry_approved() {
     let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    registry.register_merchant(&admin, &merchant, &String::from_str(&env, "approved"));
     registry.set_kyc_status(&admin, &merchant, &true);
 
     let payment_id = make_id(&env, 42);
@@ -616,7 +617,8 @@ fn test_deposit_allowed_when_registry_approved() {
 #[test]
 #[should_panic(expected = "Merchant is not approved")]
 fn test_deposit_blocked_when_kyc_not_verified() {
-    let (env, escrow, _registry, _admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    registry.register_merchant(&admin, &merchant, &String::from_str(&env, "unverified"));
     let payment_id = make_id(&env, 43);
 
     escrow.deposit(
@@ -633,6 +635,7 @@ fn test_deposit_blocked_when_kyc_not_verified() {
 #[should_panic(expected = "Merchant is not approved")]
 fn test_deposit_blocked_when_merchant_suspended() {
     let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    registry.register_merchant(&admin, &merchant, &String::from_str(&env, "suspended"));
     registry.set_kyc_status(&admin, &merchant, &true);
     registry.suspend_merchant(&admin, &merchant);
 

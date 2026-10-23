@@ -3,6 +3,7 @@
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
 
 use crate::{SettlementLedgerContract, SettlementLedgerContractClient};
+use fee_calculator::{FeeCalculatorContract, FeeCalculatorContractClient, FeeTier};
 
 fn pid(env: &Env, seed: u8) -> BytesN<32> {
     BytesN::from_array(env, &[seed; 32])
@@ -178,4 +179,85 @@ fn test_get_unknown_panics() {
     let (env, _admin, client) = setup();
     let result = client.try_get_settlement(&pid(&env, 99));
     assert!(result.is_err());
+}
+
+#[test]
+fn test_calculated_fee_is_recorded_and_incorrect_fee_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let tiers = soroban_sdk::vec![
+        &env,
+        FeeTier {
+            threshold_usdc: 0,
+            fee_bps: 150
+        },
+        FeeTier {
+            threshold_usdc: 1_000,
+            fee_bps: 120
+        },
+        FeeTier {
+            threshold_usdc: 5_000,
+            fee_bps: 100
+        },
+    ];
+
+    let fee_calculator_id = env.register(FeeCalculatorContract, (&admin, tiers));
+    let fee_calculator = FeeCalculatorContractClient::new(&env, &fee_calculator_id);
+    let settlement_ledger_id = env.register(SettlementLedgerContract, (&admin,));
+    let settlement_ledger = SettlementLedgerContractClient::new(&env, &settlement_ledger_id);
+
+    let (first_fee, first_net, first_bps) = fee_calculator.calculate_fee(&merchant, &900);
+    assert_eq!((first_fee, first_net, first_bps), (13, 887, 150));
+
+    let (fee, net, bps) = fee_calculator.calculate_fee(&merchant, &200);
+    assert_eq!((fee, net, bps), (2, 198, 120));
+
+    let invalid_record = settlement_ledger.try_record_settlement(
+        &admin,
+        &pid(&env, 80),
+        &merchant,
+        &200,
+        &(fee + 1),
+        &net,
+        &1_700_000_000u64,
+        &fiat_ref(&env, "WRONG-FEE"),
+    );
+    assert!(invalid_record.is_err());
+
+    settlement_ledger.record_settlement(
+        &admin,
+        &pid(&env, 80),
+        &merchant,
+        &200,
+        &fee,
+        &net,
+        &1_700_000_000u64,
+        &fiat_ref(&env, "TIER-2"),
+    );
+    let tier_two = settlement_ledger.get_settlement(&pid(&env, 80));
+    assert_eq!(tier_two.amount, 200);
+    assert_eq!(tier_two.fee, fee);
+    assert_eq!(tier_two.net, net);
+
+    let (tier_three_fee, tier_three_net, tier_three_bps) =
+        fee_calculator.calculate_fee(&merchant, &4_000);
+    assert_eq!(
+        (tier_three_fee, tier_three_net, tier_three_bps),
+        (40, 3_960, 100)
+    );
+    settlement_ledger.record_settlement(
+        &admin,
+        &pid(&env, 81),
+        &merchant,
+        &4_000,
+        &tier_three_fee,
+        &tier_three_net,
+        &1_700_000_001u64,
+        &fiat_ref(&env, "TIER-3"),
+    );
+    let tier_three = settlement_ledger.get_settlement(&pid(&env, 81));
+    assert_eq!(tier_three.fee, tier_three_fee);
+    assert_eq!(tier_three.net, tier_three_net);
 }
