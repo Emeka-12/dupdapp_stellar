@@ -98,7 +98,12 @@ impl AdminAuthContract {
         env.storage().instance().set(&DataKey::AdminIndex, &index);
     }
 
-    /// Return the contract ABI version.
+    /// Return the contract ABI version stored at construction time.
+    pub fn get_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::Version)
+    /// Return the contract ABI version stored at construction time.
     pub fn get_version(env: Env) -> u32 {
         env.storage()
             .instance()

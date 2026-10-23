@@ -2,6 +2,13 @@
 
 Soroban smart contracts powering the dabdub payment platform.
 
+## Repository layout
+
+- `dupdub_contracts/` — Soroban smart contracts workspace (Cargo workspace)
+- `contracts/` — per-contract crates and documentation
+- `scripts/` — deployment and verification helpers
+- `.github/workflows/` — CI and deployment pipelines
+
 ## Contract Interaction Diagrams
 
 > **Maintenance note:** These diagrams are part of the contract documentation. Whenever a new cross-contract call is added (a new `#[contractclient]` interface, a new `env.invoke_contract` / client invocation, or a new contract-to-contract data dependency), update the relevant diagram below in the same PR. Reviewers should treat a stale diagram as a documentation bug.
@@ -48,26 +55,6 @@ flowchart TD
     RF -->|transfer| TR
     RF -->|emit| NT
     RF -->|check_role| AC
-
-```bash
-make build              # debug build of all contracts
-make build-optimised    # release build + wasm-opt -Oz
-make check-wasm-size    # enforce the 64 KB per-contract WASM limit
-make test               # cargo test across the workspace
-make lint               # clippy + fmt --check + cargo audit (stops on first failure)
-```
-
-Shows the data flow when a customer deposits into `payment_escrow` and the e
-```
-
-### Payment Escrow Deposit → Settlement Ledger Record (Data Flow)
-
-```bash
-make build              # debug build of all contracts
-make build-optimised    # release build + wasm-opt -Oz
-make check-wasm-size    # enforce the 64 KB per-contract WASM limit
-make test               # cargo test across the workspace
-make lint               # clippy + fmt --check + cargo audit (stops on first failure)
 ```
 
 ### Payment Escrow Deposit → Settlement Ledger Record (Data Flow)
@@ -105,23 +92,15 @@ sequenceDiagram
     PE->>PE: Payment{status: Released}
 ```
 
-Or directly with cargo, from `dupdapp_contract/`:
+## Smart contracts
+
+The Soroban contracts live in the `dupdub_contracts` workspace directory. Build and test them with:
 
 ```bash
-cd dupdapp_contract
-cargo build --target wasm32v1-none --release
+cd dupdub_contracts
 cargo test
 ```
 
-### Running a local Soroban testnet
-
-A Docker-based local Soroban testnet is provided via the [`stellar/quickstart`](https://hub.docker.com/r/stellar/quickstart) container, defined in [`docker-compose.yml`](docker-compose.yml).
-
-**Prerequisites**
-
-- Docker with the Compose plugin (`docker compose`)
-- [`stellar-cli`](https://developers.stellar.org/docs/t
-```
 Or directly with cargo, from `dupdapp_contract/`:
 
 ```bash
