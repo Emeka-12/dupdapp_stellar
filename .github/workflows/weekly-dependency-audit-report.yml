@@ -26,8 +26,18 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked
+
+      - name: Generate Rust contracts audit report
+        working-directory: dabdub_contracts
+        run: cargo audit --format json > rust-audit-report.txt 2>&1 || true
+
+      - name: Generate backend audit report
+        run: node scripts/dependency-audit-report.js backend --output backend-audit-report.txt
 
       - name: Run npm audit (backend)
         id: npm_audit

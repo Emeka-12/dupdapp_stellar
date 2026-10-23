@@ -119,6 +119,25 @@ jobs:
           path: dupdub_contracts/target/wasm32v1-none/release/*.wasm
           retention-days: 30
 
+  cargo-audit:
+    name: Cargo audit (Rust dependency vulnerabilities)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # The cargo workspace lives in dabdub_contracts/; there is no manifest at
+      # the repository root, so the audit runs from there.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run cargo audit (fail on HIGH or CRITICAL)
+        working-directory: dabdub_contracts
+        run: cargo audit --fail-severity high
+
       # Generate TypeScript bindings for every built contract. Output lands in
       # bindings/<contract-name>/ so it can be published and consumed by the
       # NestJS backend. Runs after the build step above so the freshly built
@@ -286,3 +305,13 @@ jobs:
                 owner, repo, issue_number, body,
               });
             }
+
+      # The cargo workspace lives in dabdub_contracts/; there is no manifest at
+      # the repository root, so the audit runs from there.
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run cargo audit (fail on HIGH or CRITICAL)
+        working-directory: dabdub_contracts
+        run: cargo audit --fail-severity high
+
