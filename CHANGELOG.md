@@ -4,7 +4,16 @@ All notable changes to the DupDub Soroban contracts are documented in this file.
 
 This project adheres to [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html) for each
-contract's version. Contract versions are tracked per contract (see the
+- `CHANGELOG.md` tracking contract version history (this file).
+
+## How to update this changelog
+
+Every merge to `main` that changes a contract's behaviour or bumps its version
+**must** update this file in the same pull request:
+
+1. Add your change under `## [Unreleased]` using the appropriate Keep a Changelog
+   heading (`Added`, `Changed`, `Deprecated`, `Removed`, `Fixed`, `Security`).
+2. For each affected contract, state the **contract name** and the contract's version. Contract versions are tracked per contract (see the
 `version` returned by each contract's `version()` entry point) and bumped
 independently.
 
@@ -20,8 +29,13 @@ Each entry records:
 ## [Unreleased]
 
 ### Added
-
 - `CHANGELOG.md` tracking contract version history (this file).
+
+## [Unreleased]
+
+### Added
+
+- _Nothing yet._
 
 ### Changed
 
@@ -85,3 +99,4 @@ same pull request. Follow this process:
    with the release date, and update the comparison links at the bottom.
 
 Reviewers should block a contract-changing PR that does not update this file.
+

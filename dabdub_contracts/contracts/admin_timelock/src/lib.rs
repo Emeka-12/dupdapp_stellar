@@ -22,6 +22,7 @@
 //! See `test.rs` for an integration test that demonstrates this composition.
 
 #![no_std]
+#![deny(warnings)]
 
 mod test;
 
@@ -283,7 +284,4 @@ impl AdminTimelockContract {
             .remove(&DataKey::Change(change_id));
     }
 
-    /// Transfer admin authority to a new address. Irreversible without the new admin's key.
-   
-
-/* … truncated 2098 chars — edit only what you need near the top … */
+            panic!("{}", errors::CANNOT_PRUNE_PENDING);

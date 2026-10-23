@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(warnings)]
 
 mod test;
 
@@ -119,7 +120,6 @@ impl AdminAuthContract {
         caller.require_auth();
         Self::require_super_admin(&env, &caller);
         let existing: Option<AdminUser> = env.storage().persistent().get(&DataKey::Admin(admin.clone()));
-        let is_new = existing.is_none();
         if let Some(ref old_user) = existing {
             // Role update on an existing admin — emit a distinct event.
             Self::save(
@@ -164,7 +164,6 @@ impl AdminAuthContract {
                 },
             );
         }
-        let _ = is_new; // suppress unused warning
     }
 
     /// Remove an admin from the credential store. SuperAdmin only.
