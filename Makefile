@@ -17,6 +17,16 @@ CONTRACTS := escrow registry
 # message identifying which check failed.
 lint:
 	@echo "==> [1/3] Running clippy..."
+	@$(MAKE) --no-print-directory lint-clippy || { echo
+
+.PHONY: build build-optimised check-wasm-size wasm-size-report test integration-test verify-deployment lint lint-clippy lint-fmt lint-audit \
+        $(addprefix build-,$(CONTRACTS)) $(addprefix test-,$(CONTRACTS)) \
+        local-testnet-start local-testnet-stop local-testnet-deploy
+
+# Run all lint checks in sequence. Stops on the first failure with a clear
+# message identifying which check failed.
+lint:
+	@echo "==> [1/3] Running clippy..."
 	@$(MAKE) --no-print-directory lint-clippy || { echo "ERROR: clippy check failed. Run 'cargo clippy --all-targets --all-features -- -D warnings' to see details." >&2; exit 1; }
 	@echo "==> [2/3] Running fmt check..."
 	@$(MAKE) --no-print-directory lint-fmt || { echo "ERROR: fmt check failed. Run 'cargo fmt --all' to fix formatting." >&2; exit 1; }
@@ -106,6 +116,23 @@ wasm-size-report: build-optimised
 	done; \
 	printf '\n_Budget: %s bytes (64 KB). Yellow: >80%% of budget. Red: over budget._\n' "$(WASM_SIZE_LIMIT)" >> $(SIZE_REPORT); \
 	cat $(SIZE_REPORT)
+
+bindings: build
+	@echo "Generating TypeScript bindings for all contracts..."
+	@mkdir -p $(BINDINGS_DIR)
+	@for contract in $(CONTRACTS); do \
+		wasm=$(WASM_DIR)/$$contract.wasm; \
+		if [ ! -f $$wasm ]; then \
+			echo "  SKIP  $$contract (missing $$wasm)"; \
+			continue; \
+		fi; \
+		echo "  generating $$contract"; \
+		stellar contract bindings typescript \
+			--wasm $$wasm \
+			--output-dir $(BINDINGS_DIR)/$$contract \
+			--overwrite || exit 1; \
+	done
+	@echo "Bindings written to $(BINDINGS_DIR)."
 
 test:
 	cd $(CONTRACTS_DIR) && cargo test
