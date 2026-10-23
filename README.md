@@ -163,11 +163,9 @@ git config core.hooksPath .githooks
 - **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) — runs `cargo test`, coverage (tarpaulin), and a WASM build on every push/PR.
 - **Deploy** ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)) — builds and optimises WASMs, then deploys to Stellar testnet on merges to `main` and to mainnet on version tags (manual approval required).
 
-### CI caching
+| Warm cache (registry + `target/` hit) | ~2–4 min |
 
-The Soroban/Rust CI jobs cache the Cargo registry (`~/.cargo/registry`, `~/.cargo/git`) and the workspace `target/` directory via `actions/cache`. The cache key is derived from a hash of `dupdapp_contract/Cargo.lock`, so dependency changes invalidate the cache while unrelated commits reuse it.
-
-Expected CI build time for the Rust/Soroban jobs:
+Actual times vary with runner load and the size of the change; the warm-cache path is typically 3–4× faster because dependencies are not recompiled from scratch.
 
 | Scenario | Approx. duration |
 |---|---|

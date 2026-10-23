@@ -21,11 +21,11 @@ jobs:
         with:
           targets: wasm32v1-none
 
-      # Cache the cargo registry and the compiled target/ directory so that
-      # repeated CI runs reuse downloaded crates and previously built
-      # dependencies. The key is derived from Cargo.lock so a dependency bump
-      # invalidates the cache; restore-keys fall back to the most recent cache
-      # for the same OS so partial rebuilds still benefit.
+      # Cache the cargo registry (downloaded crate sources) and the workspace
+      # target directory so dependencies are not re-downloaded and recompiled
+      # on every run. The key is derived from the Cargo.lock hash so the cache
+      # is invalidated whenever the dependency graph changes; restore-keys
+      # provide a fallback so partial rebuilds still benefit.
       - name: Cache cargo registry and target
         uses: actions/cache@v4
         with:
