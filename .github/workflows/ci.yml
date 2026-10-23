@@ -42,6 +42,11 @@ jobs:
         with:
           tool: cargo-tarpaulin
 
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
       - name: Install Rust wasm target
         run: rustup target add wasm32v1-none
 
@@ -50,6 +55,13 @@ jobs:
       - name: cargo test
         working-directory: dupdub_contracts
         run: cargo test
+
+      # Scans Cargo.lock against the RustSec advisory database. cargo-audit
+      # exits non-zero on any vulnerability by default, which fails CI on HIGH
+      # and CRITICAL advisories (and lower severities too).
+      - name: cargo audit
+        working-directory: dabdub_contracts
+        run: cargo audit
 
       - name: Generate coverage report
         working-directory: dupdub_contracts

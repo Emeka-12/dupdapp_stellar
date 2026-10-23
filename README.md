@@ -26,6 +26,29 @@ flowchart TD
         RF[refund_manager]
     end
 
+## Coverage
+
+Per-contract coverage is enforced at **80%** via [`codecov.yml`](codecov.yml); a PR fails if any contract drops below the threshold. Test files and snapshots are excluded from the calculation.
+
+| Contract | Coverage |
+|---|---|
+| `admin_timelock` | [![admin_timelock](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=admin_timelock)](https://codecov.io/gh/dupdub/dupdub-contracts?component=admin_timelock) |
+| `batch_payments` | [![batch_payments](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=batch_payments)](https://codecov.io/gh/dupdub/dupdub-contracts?component=batch_payments) |
+| `fee_calculator` | [![fee_calculator](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=fee_calculator)](https://codecov.io/gh/dupdub/dupdub-contracts?component=fee_calculator) |
+| `fee_distributor` | [![fee_distributor](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=fee_distributor)](https://codecov.io/gh/dupdub/dupdub-contracts?component=fee_distributor) |
+| `liquidity_router` | [![liquidity_router](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=liquidity_router)](https://codecov.io/gh/dupdub/dupdub-contracts?component=liquidity_router) |
+| `merchant_registry` | [![merchant_registry](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=merchant_registry)](https://codecov.io/gh/dupdub/dupdub-contracts?component=merchant_registry) |
+| `multisig_admin` | [![multisig_admin](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=multisig_admin)](https://codecov.io/gh/dupdub/dupdub-contracts?component=multisig_admin) |
+| `payment_escrow` | [![payment_escrow](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=payment_escrow)](https://codecov.io/gh/dupdub/dupdub-contracts?component=payment_escrow) |
+| `payment_request` | [![payment_request](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=payment_request)](https://codecov.io/gh/dupdub/dupdub-contracts?component=payment_request) |
+| `rbac_access` | [![rbac_access](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=rbac_access)](https://codecov.io/gh/dupdub/dupdub-contracts?component=rbac_access) |
+| `reconciliation` | [![reconciliation](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=reconciliation)](https://codecov.io/gh/dupdub/dupdub-contracts?component=reconciliation) |
+| `settlement_ledger` | [![settlement_ledger](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=settlement_ledger)](https://codecov.io/gh/dupdub/dupdub-contracts?component=settlement_ledger) |
+| `slippage_protection` | [![slippage_protection](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=slippage_protection)](https://codecov.io/gh/dupdub/dupdub-contracts?component=slippage_protection) |
+| `stellar_confirmations` | [![stellar_confirmations](https://codecov.io/gh/dupdub/dupdub-contracts/branch/main/graph/badge.svg?component=stellar_confirmations)](https://codecov.io/gh/dupdub/dupdub-contracts?component=stellar_confirmations) |
+
+## Development
+
     subgraph Support["Supporting Contracts"]
         FE[fee_manager]
         TR[treasury]
@@ -205,6 +228,9 @@ Grafana alert rules are provisioned from [`grafana/provisioning/alerting/`](graf
 
 <!-- handsoff-issue-1113 -->
 - #1113: payment_escrow: the highest-risk functions (upgrade, emergency_drain's XLM path, set_registry(None)) have the thinnest test coverage
+
+<!-- handsoff-issue-1261 -->
+- #1261: [P2] payment_escrow: add support for partial dispute resolution
 
 <!-- handsoff-issue-1256 -->
 - #1256: [P2] payment_escrow: verify merchant is KYC-verified before allowing deposit
