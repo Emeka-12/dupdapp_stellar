@@ -96,15 +96,22 @@ jobs:
           path: dupdub_contracts/target/wasm32v1-none/release/*.wasm
           retention-days: 30
 
-      # Generates TypeScript bindings for every contract from the freshly built
-      # wasm so the backend can import auto-generated types instead of
-      # hand-written ones. Runs after the build step above.
+      # Generate TypeScript bindings for every built contract. Output lands in
+      # bindings/<contract-name>/ so it can be published and consumed by the
+      # NestJS backend. Runs after the build step above so the freshly built
+      # wasm is used instead of hand-maintained bindings.
+      - name: Generate contract TypeScript bindings
+        run: |
+          mkdir -p bindings
       - name: Install Stellar CLI
         run: |
           curl -fsSL https://github.com/stellar/stellar-cli/raw/main/install.sh | bash -s -- --version 22.0.1
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - name: Generate contract bindings
+      # Generate TypeScript bindings for every built contract. Output lands in
+      # bindings/<contract-name>/ so it can be published and consumed by the
+      # NestJS backend.
+      - name: Generate contract TypeScript bindings
         run: |
           set -euo pipefail
           mkdir -p bindings
@@ -120,7 +127,7 @@ jobs:
               --overwrite
           done
 
-      - name: Upload contract bindings
+      - name: Upload generated bindings
         uses: actions/upload-artifact@v4
         with:
           name: contract-bindings
@@ -136,10 +143,11 @@ jobs:
         run: |
           set -euo pipefail
           tag="bindings-${GITHUB_SHA::12}"
-          tar -czf contract-bindings.tar.gz -C bindings .
-          gh release create "$tag" contract-bindings.tar.gz \
-            --title "Contract bindings $tag" \
-            --notes "Auto-generated TypeScript bindings for commit $GITHUB_SHA."
+          tar -czf "contract-bindings-${GITHUB_SHA::12}.tar.gz" -C bindings .
+          gh release create "$tag" \
+            "contract-bindings-${GITHUB_SHA::12}.tar.gz" \
+            --title "Contract bindings ${GITHUB_SHA::12}" \
+            --notes "Auto-generated TypeScript bindings from commit ${GITHUB_SHA}."
 
   # Reports per-contract WASM sizes on pull requests so size regressions are
   # visible during review instead of only at deploy time.

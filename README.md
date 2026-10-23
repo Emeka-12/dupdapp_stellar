@@ -206,6 +206,9 @@ Grafana alert rules are provisioned from [`grafana/provisioning/alerting/`](graf
 <!-- handsoff-issue-1113 -->
 - #1113: payment_escrow: the highest-risk functions (upgrade, emergency_drain's XLM path, set_registry(None)) have the thinnest test coverage
 
+<!-- handsoff-issue-1256 -->
+- #1256: [P2] payment_escrow: verify merchant is KYC-verified before allowing deposit
+
 <!-- handsoff-issue-1266 -->
 - #1266: [P2] payment_escrow: add `is_expired()` view function
 
