@@ -96,147 +96,119 @@ jobs:
           path: dupdub_contracts/target/wasm32v1-none/release/*.wasm
           retention-days: 30
 
-      # Posts a per-contract WASM size table to the pull request as a comment.
-      # The current sizes come from the freshly built artifacts; the previous
-      # sizes are read from the base branch's build so the delta reflects the
-      # change introduced by this PR. Contracts above 80% of the 64 KB budget
-      # are highlighted yellow, contracts over budget are highlighted red.
-      - name: Report contract sizes to PR
-        if: github.event_name == 'pull_request'
+  # Reports per-contract WASM sizes on pull requests so size regressions are
+  # visible during review instead of only at deploy time.
+  wasm-size-report:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Install wasm-opt
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y binaryen
+
+      - name: Build optimised WASM
+        run: make build-optimised
+
+      - name: Measure current WASM sizes
+        run: |
+          mkdir -p /tmp/wasm-current
+          for f in dabdub_contracts/target/wasm32v1-none/release/*.wasm; do
+            [ -e "$f" ] || continue
+            name=$(basename "$f" .wasm)
+            stat -c '%s' "$f" > "/tmp/wasm-current/$name"
+          done
+
+      - name: Checkout base branch for previous sizes
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - name: Build base WASM and measure previous sizes
+        run: |
+          mkdir -p /tmp/wasm-previous
+          if [ -d base/dabdub_contracts ]; then
+            (cd base && make build-optimised) || true
+            for f in base/dabdub_contracts/target/wasm32v1-none/release/*.wasm; do
+              [ -e "$f" ] || continue
+              name=$(basename "$f" .wasm)
+              stat -c '%s' "$f" > "/tmp/wasm-previous/$name"
+            done
+          fi
+
+      - name: Compose size report
+        id: report
+        run: |
+          BUDGET=65536
+          WARN=$((BUDGET * 80 / 100))
+          {
+            echo '<!-- soroban-wasm-size-report -->'
+            echo '### Soroban contract WASM size report'
+            echo ''
+            echo '| Contract | Current size | Previous size | Delta |'
+            echo '| --- | --- | --- | --- |'
+            for cur in /tmp/wasm-current/*; do
+              [ -e "$cur" ] || continue
+              name=$(basename "$cur")
+              current=$(cat "$cur")
+              if [ -f "/tmp/wasm-previous/$name" ]; then
+                previous=$(cat "/tmp/wasm-previous/$name")
+                delta=$((current - previous))
+                if [ "$delta" -gt 0 ]; then
+                  delta_str="+${delta} B"
+                else
+                  delta_str="${delta} B"
+                fi
+                prev_str="${previous} B"
+              else
+                delta_str="n/a"
+                prev_str="n/a"
+              fi
+              row="| ${name} | ${current} B | ${prev_str} | ${delta_str} |"
+              if [ "$current" -gt "$BUDGET" ]; then
+                row="| :red_circle: ${name} | ${current} B | ${prev_str} | ${delta_str} |"
+              elif [ "$current" -gt "$WARN" ]; then
+                row="| :warning: ${name} | ${current} B | ${prev_str} | ${delta_str} |"
+              fi
+              echo "$row"
+            done
+            echo ''
+            echo "Budget: ${BUDGET} B (64 KB). :warning: = over 80% of budget, :red_circle: = over budget."
+          } > /tmp/wasm-report.md
+          echo 'report_path=/tmp/wasm-report.md' >> "$GITHUB_OUTPUT"
+
+      - name: Post size report comment
         uses: actions/github-script@v7
-        env:
-          BUDGET_BYTES: "65536"
-          WASM_DIR: dabdub_contracts/target/wasm32v1-none/release
         with:
           script: |
             const fs = require('fs');
-            const path = require('path');
-
-            const budget = Number(process.env.BUDGET_BYTES);
-            const warnThreshold = Math.floor(budget * 0.8);
-            const wasmDir = process.env.WASM_DIR;
-
-            function readSizes(dir) {
-              const sizes = {};
-              if (!fs.existsSync(dir)) return sizes;
-              for (const file of fs.readdirSync(dir)) {
-                if (!file.endsWith('.wasm')) continue;
-                const name = path.basename(file, '.wasm');
-                sizes[name] = fs.statSync(path.join(dir, file)).size;
-              }
-              return sizes;
-            }
-
-            function formatBytes(bytes) {
-              return `${bytes.toLocaleString('en-US')} B`;
-            }
-
-            function formatDelta(delta) {
-              if (delta === null) return 'n/a';
-              if (delta === 0) return '0 B';
-              const sign = delta > 0 ? '+' : '-';
-              return `${sign}${Math.abs(delta).toLocaleString('en-US')} B`;
-            }
-
-            const current = readSizes(wasmDir);
-            const contracts = Object.keys(current).sort();
-
-            if (contracts.length === 0) {
-              core.info('No WASM artifacts found; skipping size report.');
-              return;
-            }
-
-            // Fetch the base branch's previously reported sizes from the most
-            // recent successful run on the base ref, if available.
-            let previous = {};
-            try {
-              const { owner, repo } = context.repo;
-              const base = context.payload.pull_request.base.ref;
-              const runs = await github.rest.actions.listWorkflowRuns({
-                owner,
-                repo,
-                workflow_id: 'ci.yml',
-                branch: base,
-                status: 'success',
-                per_page: 1,
-              });
-              const run = runs.data.workflow_runs[0];
-              if (run) {
-                const artifacts = await github.rest.actions.listWorkflowRunArtifacts({
-                  owner,
-                  repo,
-                  run_id: run.id,
-                });
-                const artifact = artifacts.data.artifacts.find(
-                  (a) => a.name === 'wasm-contracts'
-                );
-                if (artifact) {
-                  const download = await github.rest.actions.downloadArtifact({
-                    owner,
-                    repo,
-                    artifact_id: artifact.id,
-                    archive_format: 'zip',
-                  });
-                  const AdmZip = require('adm-zip');
-                  const zip = new AdmZip(Buffer.from(download.data));
-                  for (const entry of zip.getEntries()) {
-                    if (!entry.entryName.endsWith('.wasm')) continue;
-                    const name = path.basename(entry.entryName, '.wasm');
-                    previous[name] = entry.header.size;
-                  }
-                }
-              }
-            } catch (err) {
-              core.info(`Could not load previous sizes: ${err.message}`);
-            }
-
-            const rows = contracts.map((name) => {
-              const size = current[name];
-              const prev = previous[name] ?? null;
-              const delta = prev === null ? null : size - prev;
-              let status = '✅';
-              if (size > budget) status = '🔴 over budget';
-              else if (size > warnThreshold) status = '🟡 near budget';
-              return `| ${name} | ${formatBytes(size)} | ${
-                prev === null ? 'n/a' : formatBytes(prev)
-              } | ${formatDelta(delta)} | ${status} |`;
-            });
-
-            const body = [
-              '### Soroban contract WASM sizes',
-              '',
-              `Budget: ${formatBytes(budget)} per contract (warn at ${formatBytes(
-                warnThreshold
-              )}).`,
-              '',
-              '| Contract | Current size | Previous size | Delta | Status |',
-              '| --- | --- | --- | --- | --- |',
-              ...rows,
-            ].join('\n');
-
+            const marker = '<!-- soroban-wasm-size-report -->';
+            const body = fs.readFileSync('/tmp/wasm-report.md', 'utf8');
             const { owner, repo } = context.repo;
             const issue_number = context.payload.pull_request.number;
-            const marker = '### Soroban contract WASM sizes';
-            const comments = await github.rest.issues.listComments({
-              owner,
-              repo,
-              issue_number,
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number,
             });
-            const existing = comments.data.find((c) =>
-              c.body && c.body.startsWith(marker)
-            );
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
             if (existing) {
               await github.rest.issues.updateComment({
-                owner,
-                repo,
-                comment_id: existing.id,
-                body,
+                owner, repo, comment_id: existing.id, body,
               });
             } else {
               await github.rest.issues.createComment({
-                owner,
-                repo,
-                issue_number,
-                body,
+                owner, repo, issue_number, body,
+              });
+            }
               });
             }

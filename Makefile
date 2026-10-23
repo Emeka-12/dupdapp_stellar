@@ -73,8 +73,67 @@ wasm-size-report: build-optimised
 	done; \
 	cat $(WASM_SIZE_REPORT)
 
+# Emit a Markdown table of contract WASM sizes for posting as a PR comment.
+# PREVIOUS_SIZES (optional) points to a file of "contract=bytes" lines from the
+# base branch; when absent, previous size and delta are reported as n/a.
+wasm-size-report: build-optimised
+	@echo "Generating WASM size report -> $(SIZE_REPORT)"
+	@printf '### Soroban contract WASM sizes\n\n' > $(SIZE_REPORT); \
+	printf '| Contract | Current size | Previous size | Delta |\n' >> $(SIZE_REPORT); \
+	printf '| --- | --- | --- | --- |\n' >> $(SIZE_REPORT); \
+	for wasm in $(WASM_DIR)/*.wasm; do \
+		name=$$(basename $$wasm .wasm); \
+		size=$$(wc -c < $$wasm); \
+		prev=""; \
+		if [ -n "$(PREVIOUS_SIZES)" ] && [ -f "$(PREVIOUS_SIZES)" ]; then \
+			prev=$$(grep -E "^$$name=" "$(PREVIOUS_SIZES)" | head -n1 | cut -d= -f2); \
+		fi; \
+		if [ -n "$$prev" ]; then \
+			delta=$$((size - prev)); \
+			if [ $$delta -gt 0 ]; then delta_str="+$$delta"; else delta_str="$$delta"; fi; \
+			prev_str="$$prev"; \
+		else \
+			delta_str="n/a"; \
+			prev_str="n/a"; \
+		fi; \
+		if [ $$size -gt $(WASM_SIZE_LIMIT) ]; then \
+			printf '| %s | <span style="color:red">%s bytes</span> | %s | %s |\n' "$$name" "$$size" "$$prev_str" "$$delta_str" >> $(SIZE_REPORT); \
+		elif [ $$size -gt $(WASM_SIZE_WARN) ]; then \
+			printf '| %s | <span style="color:orange">%s bytes</span> | %s | %s |\n' "$$name" "$$size" "$$prev_str" "$$delta_str" >> $(SIZE_REPORT); \
+		else \
+			printf '| %s | %s bytes | %s | %s |\n' "$$name" "$$size" "$$prev_str" "$$delta_str" >> $(SIZE_REPORT); \
+		fi; \
+	done; \
+	printf '\n_Budget: %s bytes (64 KB). Yellow: >80%% of budget. Red: over budget._\n' "$(WASM_SIZE_LIMIT)" >> $(SIZE_REPORT); \
+	cat $(SIZE_REPORT)
+
 test:
 	cd $(CONTRACTS_DIR) && cargo test
+
+# Run all lint checks in sequence, stopping on the first failure.
+lint: lint-clippy lint-fmt lint-audit
+	@echo "All lint checks passed."
+
+lint-clippy:
+	@echo "==> cargo clippy"
+	@cd $(CONTRACTS_DIR) && cargo clippy --all-targets -- -D warnings || { \
+		echo "ERROR: clippy found issues. Run 'cargo clippy --fix' or fix warnings above."; \
+		exit 1; \
+	}
+
+lint-fmt:
+	@echo "==> cargo fmt --check"
+	@cd $(CONTRACTS_DIR) && cargo fmt --all -- --check || { \
+		echo "ERROR: formatting issues found. Run 'cargo fmt --all' to fix."; \
+		exit 1; \
+	}
+
+lint-audit:
+	@echo "==> cargo audit"
+	@cd $(CONTRACTS_DIR) && cargo audit || { \
+		echo "ERROR: cargo audit found vulnerable dependencies. Review the report above."; \
+		exit 1; \
+	}
 
 # Per-contract test: `make test-<contract>` tests a single contract.
 $(addprefix test-,$(CONTRACTS)): test-%:

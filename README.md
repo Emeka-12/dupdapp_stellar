@@ -49,26 +49,25 @@ flowchart TD
     RF -->|emit| NT
     RF -->|check_role| AC
 
-    DS -->|check_role| AC
-    DS -->|transfer| TR
-    DS -->|emit| NT
+```bash
+make build              # debug build of all contracts
+make build-optimised    # release build + wasm-opt -Oz
+make check-wasm-size    # enforce the 64 KB per-contract WASM limit
+make test               # cargo test across the workspace
+make lint               # clippy + fmt --check + cargo audit (stops on first failure)
+```
 
-    OR -->|get_price| AN
-    OR -->|check_role| AC
+Shows the data flow when a customer deposits into `payment_escrow` and the e
+```
 
-    FE -->|check_role| AC
-    TR -->|check_role| AC
-    TR -->|check_role| MT
+### Payment Escrow Deposit → Settlement Ledger Record (Data Flow)
 
-    NT -->|check_role| AC
-    AN -->|check_role| AC
-    KY -->|check_role| AC
-    MT -->|check_role| AC
-
-    UP -->|check_role| AC
-    UP -->|update_wasm| PE
-    UP -->|update_wasm| SL
-    UP -->|update_wasm| RF
+```bash
+make build              # debug build of all contracts
+make build-optimised    # release build + wasm-opt -Oz
+make check-wasm-size    # enforce the 64 KB per-contract WASM limit
+make test               # cargo test across the workspace
+make lint               # clippy + fmt --check + cargo audit (stops on first failure)
 ```
 
 ### Payment Escrow Deposit → Settlement Ledger Record (Data Flow)
@@ -104,6 +103,24 @@ sequenceDiagram
     SL->>SL: store SettlementRecord{payment_id, merchant, amount, fee}
     SL-->>PE: SettlementRecordedEvent
     PE->>PE: Payment{status: Released}
+```
+
+Or directly with cargo, from `dupdapp_contract/`:
+
+```bash
+cd dupdapp_contract
+cargo build --target wasm32v1-none --release
+cargo test
+```
+
+### Running a local Soroban testnet
+
+A Docker-based local Soroban testnet is provided via the [`stellar/quickstart`](https://hub.docker.com/r/stellar/quickstart) container, defined in [`docker-compose.yml`](docker-compose.yml).
+
+**Prerequisites**
+
+- Docker with the Compose plugin (`docker compose`)
+- [`stellar-cli`](https://developers.stellar.org/docs/t
 ```
 Or directly with cargo, from `dupdapp_contract/`:
 
