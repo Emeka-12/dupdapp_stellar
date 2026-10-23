@@ -56,10 +56,21 @@ jobs:
         working-directory: dupdub_contracts
         run: cargo test
 
+      # Property-based tests (proptest) live behind the `proptest` feature so
+      # the default test run stays fast. This job exercises them explicitly so
+      # regressions in fee/slippage/escrow invariants are caught in CI.
+      - name: cargo test (property-based)
+        working-directory: dabdub_contracts
+        run: cargo test --features proptest -- --nocapture
+
       # Scans Cargo.lock against the RustSec advisory database. cargo-audit
       # exits non-zero on any vulnerability by default, which fails CI on HIGH
       # and CRITICAL advisories (and lower severities too).
       - name: cargo audit
+        working-directory: dabdub_contracts
+        run: cargo audit
+
+      - name: Generate coverage report
         working-directory: dabdub_contracts
         run: cargo audit
 
