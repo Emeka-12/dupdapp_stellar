@@ -1,7 +1,10 @@
 #![cfg(test)]
 
+extern crate std;
+
 use crate::{AssetType, PaymentEscrowContract, PaymentEscrowContractClient, PaymentStatus};
 use merchant_registry::{MerchantRegistryContract, MerchantRegistryContractClient};
+use proptest::prelude::*;
 use soroban_sdk::{
     testutils::Address as _, testutils::Ledger, token, Address, BytesN, Env, String,
 };
@@ -818,4 +821,101 @@ fn test_dispute_after_partial_release_resolves_to_merchant() {
     assert_eq!(token_client.balance(&customer), 750_000_000);
     assert_eq!(token_client.balance(&merchant), 250_000_000);
     assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+// ── Issue #1236: TTL extension ────────────────────────────────────────────────
+
+#[test]
+fn test_payment_accessible_after_ttl_extension() {
+    let (
+        env,
+        client,
+        _contract_id,
+        _admin,
+        customer,
+        merchant,
+        _usdc,
+        _xlm,
+        _es1,
+        _es2,
+        _es3,
+        _treasury,
+    ) = setup_env();
+
+    let payment_id = BytesN::from_array(&env, &[99u8; 32]);
+    client.deposit(
+        &customer,
+        &payment_id,
+        &merchant,
+        &500_000_000i128,
+        &100u32,
+        &AssetType::Usdc,
+    );
+
+    // Simulate many ledgers passing (but within MAX_TTL_LEDGERS after deposit).
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 50;
+    });
+
+    // Reading the payment should succeed and extend the TTL in the process.
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Pending);
+    assert_eq!(payment.amount, 500_000_000);
+
+    // Further ledger advancement should still allow access because TTL was extended.
+    env.ledger().with_mut(|li| {
+        li.sequence_number += 50;
+    });
+    let payment2 = client.get_payment(&payment_id);
+    assert_eq!(payment2.status, PaymentStatus::Pending);
+}
+
+// ── Issue #1246: escrow property-based test ───────────────────────────────────
+
+proptest! {
+    /// escrow remaining_amount is always non-negative after any partial release.
+    #[test]
+    fn prop_escrow_remaining_non_negative(
+        total in 1i128..500_000_000i128,
+        release_amount in 1i128..500_000_000i128,
+    ) {
+        // Ensure release_amount <= total to satisfy the contract invariant.
+        let release_amount = release_amount.min(total);
+
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_sequence_number(10);
+        env.ledger().with_mut(|li| {
+            li.min_persistent_entry_ttl = 600_000;
+            li.max_entry_ttl = 600_000;
+        });
+
+        let admin = Address::generate(&env);
+        let customer = Address::generate(&env);
+        let merchant = Address::generate(&env);
+        let token_admin = Address::generate(&env);
+
+        let usdc = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
+        let xlm = env.register_stellar_asset_contract_v2(token_admin).address();
+
+        let es1 = Address::generate(&env);
+        let es2 = Address::generate(&env);
+        let es3 = Address::generate(&env);
+        let treasury = Address::generate(&env);
+        let emergency_signers = soroban_sdk::vec![&env, es1, es2, es3];
+
+        let contract_id = deploy_escrow(&env, &admin, &xlm, &usdc, None, &emergency_signers, &treasury);
+        let client = PaymentEscrowContractClient::new(&env, &contract_id);
+
+        token::StellarAssetClient::new(&env, &usdc).mint(&customer, &total);
+
+        let payment_id = BytesN::from_array(&env, &[42u8; 32]);
+        client.deposit(&customer, &payment_id, &merchant, &total, &50u32, &AssetType::Usdc);
+
+        client.release_partial(&admin, &payment_id, &release_amount);
+
+        let remaining = client.get_balance(&payment_id);
+        prop_assert!(remaining >= 0, "remaining_amount must be non-negative");
+        prop_assert_eq!(remaining, total - release_amount);
+    }
 }

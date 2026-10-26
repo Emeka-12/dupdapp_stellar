@@ -31,6 +31,10 @@ jobs:
 
       # The cargo workspace lives in dabdub_contracts/; there is no manifest at
       # the repository root, so every cargo invocation has to run from there.
+      - name: cargo clippy
+        working-directory: dabdub_contracts
+        run: cargo clippy -- -D warnings
+
       - name: cargo test
         working-directory: dabdub_contracts
         run: cargo test

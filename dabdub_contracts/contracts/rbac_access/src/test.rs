@@ -98,3 +98,40 @@ fn test_super_admin_can_revoke_role() {
     client.revoke_role(&super_admin, &compliance_admin);
     assert_eq!(client.get_role(&compliance_admin), None);
 }
+
+// ── Issue #1237: ReadOnly unit tests ─────────────────────────────────────────
+
+#[test]
+fn test_read_only_can_call_read_task() {
+    let (_env, client, super_admin, _operations_admin, _compliance_admin, read_only) = setup_env();
+    client.grant_role(&super_admin, &read_only, &Role::ReadOnly);
+    // ReadOnly must succeed on the read task.
+    client.execute_read_task(&read_only);
+}
+
+#[test]
+#[should_panic(expected = "insufficient role")]
+fn test_read_only_cannot_call_operations_task() {
+    let (_env, client, super_admin, _operations_admin, _compliance_admin, read_only) = setup_env();
+    client.grant_role(&super_admin, &read_only, &Role::ReadOnly);
+    client.execute_operations_task(&read_only);
+}
+
+#[test]
+fn test_operations_admin_can_call_operations_and_lower_tasks() {
+    let (_env, client, super_admin, operations_admin, _compliance_admin, _read_only) = setup_env();
+    client.grant_role(&super_admin, &operations_admin, &Role::OperationsAdmin);
+    // OperationsAdmin satisfies all lower-or-equal role requirements.
+    client.execute_operations_task(&operations_admin);
+    client.execute_compliance_task(&operations_admin);
+    client.execute_read_task(&operations_admin);
+}
+
+#[test]
+#[should_panic(expected = "insufficient role")]
+fn test_compliance_admin_cannot_call_operations_task_2() {
+    let (_env, client, super_admin, _operations_admin, compliance_admin, _read_only) = setup_env();
+    client.grant_role(&super_admin, &compliance_admin, &Role::ComplianceAdmin);
+    // ComplianceAdmin is below OperationsAdmin in the hierarchy.
+    client.execute_operations_task(&compliance_admin);
+}

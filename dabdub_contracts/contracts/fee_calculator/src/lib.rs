@@ -51,12 +51,13 @@ impl FeeCalculatorContract {
         env.storage().instance().set(&DataKey::FeeTiers, &tiers);
     }
 
-    pub fn set_fee_tiers(env: Env, caller: Address, tiers: Vec<FeeTier>) {
     pub fn set_settlement_caller(env: Env, caller: Address, settlement_caller: Address) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         env.storage().instance().set(&DataKey::SettlementCaller, &settlement_caller);
     }
+
+    pub fn set_fee_tiers(env: Env, caller: Address, tiers: Vec<FeeTier>) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
         Self::validate_tiers(&tiers);

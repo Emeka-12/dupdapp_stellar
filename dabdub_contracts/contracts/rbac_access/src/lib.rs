@@ -133,18 +133,35 @@ impl RbacAccessContract {
     }
 
     /// Sensitive operation requiring minimum `OperationsAdmin`.
+    ///
+    /// # RBAC guard usage
+    /// Functions that mutate financial state (e.g. `payment_escrow::release`,
+    /// `payment_escrow::release_partial`, `settlement_ledger::record_settlement`)
+    /// should require at minimum `OperationsAdmin`. Replace the single-address
+    /// `require_admin` guard in those contracts with a cross-contract call to
+    /// `require_role(OperationsAdmin)` once the rbac_access contract address is
+    /// wired into their constructors.
     pub fn execute_operations_task(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::OperationsAdmin);
     }
 
     /// Sensitive operation requiring minimum `ComplianceAdmin`.
+    ///
+    /// # RBAC guard usage
+    /// Functions that enforce compliance rules (e.g. merchant allowlist checks,
+    /// dispute oversight) should require at minimum `ComplianceAdmin`.
     pub fn execute_compliance_task(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::ComplianceAdmin);
     }
 
-    /// Sensitive operation requiring minimum `ReadOnly`.
+    /// Read-only operation — accessible by any assigned role.
+    ///
+    /// # RBAC guard usage
+    /// Query/getter functions (e.g. `payment_escrow::get_payment`,
+    /// `settlement_ledger::get_settlement`) should require at minimum `ReadOnly`
+    /// so that off-chain monitoring accounts cannot perform mutations.
     pub fn execute_read_task(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::ReadOnly);

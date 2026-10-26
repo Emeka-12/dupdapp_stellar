@@ -1,6 +1,9 @@
 #![cfg(test)]
 
+extern crate std;
+
 use crate::{FeeCalculatorContract, FeeCalculatorContractClient, FeeTier};
+use proptest::prelude::*;
 use soroban_sdk::{testutils::{Address as _, Ledger}, vec, Address, Env};
 
 fn setup_env() -> (Env, FeeCalculatorContractClient<'static>, Address, Address) {
@@ -109,4 +112,55 @@ fn test_non_admin_cannot_update_fee_tiers() {
     ];
 
     client.set_fee_tiers(&random, &new_tiers);
+}
+
+// ── Issue #1246: property-based tests ────────────────────────────────────────
+
+fn make_single_tier_env(fee_bps: u32) -> (Env, FeeCalculatorContractClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| {
+        li.min_temp_entry_ttl = 300_000;
+        li.min_persistent_entry_ttl = 300_000;
+        li.max_entry_ttl = 300_000;
+    });
+
+    let admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    let tiers = vec![
+        &env,
+        FeeTier {
+            threshold_usdc: 0,
+            fee_bps,
+        },
+    ];
+    let contract_id = env.register(FeeCalculatorContract, (&admin, tiers));
+    let client = FeeCalculatorContractClient::new(&env, &contract_id);
+    (env, client, merchant)
+}
+
+proptest! {
+    /// fee + net always equals amount for any positive amount and any valid fee_bps.
+    #[test]
+    fn prop_fee_plus_net_equals_amount(
+        amount in 1i128..1_000_000_000i128,
+        fee_bps in 0u32..=10_000u32,
+    ) {
+        let (_env, client, merchant) = make_single_tier_env(fee_bps);
+        let (fee, net, _bps) = client.calculate_fee(&merchant, &amount);
+        prop_assert_eq!(fee + net, amount);
+        prop_assert!(fee >= 0);
+        prop_assert!(net >= 0);
+    }
+
+    /// The returned fee_bps is always in [0, 10000].
+    #[test]
+    fn prop_slippage_bps_in_valid_range(
+        amount in 1i128..1_000_000_000i128,
+        fee_bps in 0u32..=10_000u32,
+    ) {
+        let (_env, client, merchant) = make_single_tier_env(fee_bps);
+        let (_fee, _net, returned_bps) = client.calculate_fee(&merchant, &amount);
+        prop_assert!(returned_bps <= 10_000);
+    }
 }
