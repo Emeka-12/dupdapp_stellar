@@ -8,6 +8,7 @@ use soroban_sdk::{
 };
 
 const DEFAULT_MAX_BATCH_SIZE: u32 = 20;
+const MAX_BATCHES_PER_LEDGER: u32 = 5;
 
 /// ABI version of this contract. Bump on every WASM upgrade.
 const CONTRACT_VERSION: u32 = 1;
@@ -20,6 +21,7 @@ enum DataKey {
     MaxAmount,
     MaxBatchSize,
     Counter,
+    MerchantBatchCount(Address),
     Version,
     Payment(BytesN<32>),
 }
@@ -148,6 +150,17 @@ impl BatchPaymentContract {
     ) -> Vec<BytesN<32>> {
         merchant.require_auth();
 
+        let current_ledger = env.ledger().sequence();
+        let batch_count_key = DataKey::MerchantBatchCount(merchant.clone());
+        let (count_ledger, batches_in_ledger): (u32, u32) = env
+            .storage()
+            .persistent()
+            .get(&batch_count_key)
+            .unwrap_or((current_ledger, 0));
+        if count_ledger == current_ledger && batches_in_ledger >= MAX_BATCHES_PER_LEDGER {
+            panic!("merchant exceeded maximum batches per ledger");
+        }
+
         // Gate on merchant registry when one is configured.
         if let Some(registry_addr) = env
             .storage()
@@ -249,6 +262,14 @@ impl BatchPaymentContract {
 
         let final_counter = counter + count as u64;
         env.storage().instance().set(&DataKey::Counter, &final_counter);
+        let next_batch_count = if count_ledger == current_ledger {
+            batches_in_ledger + 1
+        } else {
+            1
+        };
+        env.storage()
+            .persistent()
+            .set(&batch_count_key, &(current_ledger, next_batch_count));
 
         payment_ids
     }
