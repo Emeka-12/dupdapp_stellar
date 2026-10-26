@@ -99,6 +99,26 @@ impl FeeCalculatorContract {
         (fee, net, fee_bps)
     }
 
+    /// Read-only fee preview for a given merchant and amount.
+    /// Returns `(fee, net, bps)` without updating any state.
+    /// Safe to call from the frontend before the user confirms a payment.
+    pub fn preview_fee(env: Env, merchant: Address, amount: i128) -> (i128, i128, u32) {
+        if amount <= 0 {
+            panic!("amount must be > 0");
+        }
+        let volume = Self::current_volume(&env, &merchant);
+        // Simulate what the volume will be after this payment to pick the right tier
+        let projected = volume.checked_add(amount).expect("overflow");
+        let fee_bps = Self::select_fee_bps(&env, projected);
+        let fee = amount
+            .checked_mul(fee_bps as i128)
+            .expect("overflow")
+            .checked_div(BPS_DENOMINATOR)
+            .expect("division failure");
+        let net = amount.checked_sub(fee).expect("underflow");
+        (fee, net, fee_bps)
+    }
+
     pub fn get_merchant_volume(env: Env, merchant: Address) -> MerchantVolume {
         let current_ledger = env.ledger().sequence();
         let key = DataKey::MerchantVolume(merchant);
@@ -151,6 +171,25 @@ impl FeeCalculatorContract {
             }
             prev_threshold = tier.threshold_usdc;
             prev_bps = tier.fee_bps;
+        }
+    }
+
+    /// Returns the merchant's active rolling volume without writing any state.
+    fn current_volume(env: &Env, merchant: &Address) -> i128 {
+        let current_ledger = env.ledger().sequence();
+        let key = DataKey::MerchantVolume(merchant.clone());
+        let data = env
+            .storage()
+            .persistent()
+            .get::<DataKey, MerchantVolume>(&key)
+            .unwrap_or(MerchantVolume {
+                window_start_ledger: current_ledger,
+                volume_usdc: 0,
+            });
+        if current_ledger.saturating_sub(data.window_start_ledger) >= LEDGERS_PER_30_DAYS {
+            0
+        } else {
+            data.volume_usdc
         }
     }
 

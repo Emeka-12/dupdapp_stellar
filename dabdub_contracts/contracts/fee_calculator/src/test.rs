@@ -110,3 +110,53 @@ fn test_non_admin_cannot_update_fee_tiers() {
 
     client.set_fee_tiers(&random, &new_tiers);
 }
+
+// ── preview_fee (#1240) ───────────────────────────────────────────────────────
+
+#[test]
+fn test_preview_fee_matches_calculate_fee_for_first_payment() {
+    let (_env, client, _admin, merchant) = setup_env();
+
+    // No prior volume — both should use tier-1 (150 bps)
+    let (preview_fee, preview_net, preview_bps) = client.preview_fee(&merchant, &500);
+    let (calc_fee, calc_net, calc_bps) = client.calculate_fee(&merchant, &500);
+
+    assert_eq!(preview_bps, calc_bps);
+    assert_eq!(preview_fee, calc_fee);
+    assert_eq!(preview_net, calc_net);
+}
+
+#[test]
+fn test_preview_fee_does_not_mutate_volume() {
+    let (_env, client, _admin, merchant) = setup_env();
+
+    // Call preview_fee multiple times — volume must not accumulate
+    client.preview_fee(&merchant, &900);
+    client.preview_fee(&merchant, &900);
+    client.preview_fee(&merchant, &900);
+
+    // After three previews the volume should still be zero, so the first
+    // calculate_fee call with 900 should be priced at 150 bps (tier-1).
+    let (_, _, bps) = client.calculate_fee(&merchant, &900);
+    assert_eq!(bps, 150);
+}
+
+#[test]
+fn test_preview_fee_projects_correct_tier_after_existing_volume() {
+    let (_env, client, _admin, merchant) = setup_env();
+
+    // Build up 900 units of real volume (still in tier-1)
+    client.calculate_fee(&merchant, &900);
+
+    // A preview for 100 more units should land at tier-2 (120 bps) because
+    // projected volume will be 1000 (the tier-2 threshold).
+    let (_, _, preview_bps) = client.preview_fee(&merchant, &100);
+    assert_eq!(preview_bps, 120);
+}
+
+#[test]
+#[should_panic(expected = "amount must be > 0")]
+fn test_preview_fee_panics_on_zero_amount() {
+    let (_env, client, _admin, merchant) = setup_env();
+    client.preview_fee(&merchant, &0);
+}

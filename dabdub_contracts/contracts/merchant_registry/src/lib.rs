@@ -340,6 +340,40 @@ impl MerchantRegistryContract {
         out
     }
 
+    /// Total number of registered merchants (all statuses).
+    pub fn merchant_count(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get::<_, Vec<Address>>(&DataKey::Merchants)
+            .map(|v| v.len())
+            .unwrap_or(0)
+    }
+
+    /// Paginated list of all registered merchants (all statuses).
+    /// `page` is 0-indexed; `page_size` must be > 0.
+    pub fn list_merchants(env: Env, page: u32, page_size: u32) -> Vec<MerchantRecord> {
+        if page_size == 0 {
+            panic!("page size must be > 0");
+        }
+        let all: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Merchants)
+            .unwrap_or(Vec::new(&env));
+
+        let start = (page as u64)
+            .saturating_mul(page_size as u64)
+            .min(all.len() as u64) as u32;
+        let end = (start as u64 + page_size as u64).min(all.len() as u64) as u32;
+
+        let mut out = Vec::new(&env);
+        let slice = all.slice(start..end);
+        for addr in slice.iter() {
+            out.push_back(Self::get_merchant(env.clone(), addr));
+        }
+        out
+    }
+
     /// Returns `true` when the merchant is registered and Active.
     pub fn is_merchant_active(env: Env, merchant: Address) -> bool {
         let key = DataKey::Merchant(merchant);
