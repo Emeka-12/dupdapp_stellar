@@ -27,6 +27,7 @@ enum DataKey {
     MaxAmount,
     MaxBatchSize,
     Counter,
+    MerchantBatchCount(Address),
     Version,
     RegistryContract,
     Payment(BytesN<32>),
@@ -188,6 +189,17 @@ impl BatchPaymentContract {
         payments: Vec<PaymentInput>,
     ) -> Vec<BytesN<32>> {
         merchant.require_auth();
+
+        let current_ledger = env.ledger().sequence();
+        let batch_count_key = DataKey::MerchantBatchCount(merchant.clone());
+        let (count_ledger, batches_in_ledger): (u32, u32) = env
+            .storage()
+            .persistent()
+            .get(&batch_count_key)
+            .unwrap_or((current_ledger, 0));
+        if count_ledger == current_ledger && batches_in_ledger >= MAX_BATCHES_PER_LEDGER {
+            panic!("merchant exceeded maximum batches per ledger");
+        }
 
         // Gate on merchant registry when one is configured.
         if let Some(registry_addr) = env

@@ -39,6 +39,37 @@ fn test_batch_of_1_payment() {
 }
 
 #[test]
+#[should_panic(expected = "merchant exceeded maximum batches per ledger")]
+fn test_sixth_batch_for_merchant_in_same_ledger_reverts() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy_and_init(&env, 1, 10_000);
+
+    let merchant = Address::generate(&env);
+    let payments = soroban_sdk::vec![&env, make_payment(&env, 1000, "order")];
+    for _ in 0..6 {
+        client.create_batch(&merchant, &payments);
+    }
+}
+
+#[test]
+fn test_merchant_batch_limit_resets_on_next_ledger() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, _admin) = deploy_and_init(&env, 1, 10_000);
+
+    let merchant = Address::generate(&env);
+    let payments = soroban_sdk::vec![&env, make_payment(&env, 1000, "order")];
+    for _ in 0..5 {
+        client.create_batch(&merchant, &payments);
+    }
+
+    env.ledger().set_sequence_number(env.ledger().sequence() + 1);
+    let ids = client.create_batch(&merchant, &payments);
+    assert_eq!(ids.len(), 1);
+}
+
+#[test]
 fn test_batch_of_10_payments() {
     let env = Env::default();
     env.mock_all_auths();
