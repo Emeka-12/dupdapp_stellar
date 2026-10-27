@@ -3,6 +3,7 @@
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, String};
 
 use crate::{SettlementLedgerContract, SettlementLedgerContractClient};
+use fee_calculator::{FeeCalculatorContract, FeeCalculatorContractClient, FeeTier};
 
 fn pid(env: &Env, seed: u8) -> BytesN<32> {
     BytesN::from_array(env, &[seed; 32])
