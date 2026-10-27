@@ -78,6 +78,21 @@ cd dabdub_contracts
 cargo test -p payment-escrow test_max_ttl
 ```
 
+## Fee accuracy
+
+`fee_calculator` computes fees using integer basis points:
+
+```text
+fee = amount * fee_bps / 10,000
+net = amount - fee
+```
+
+`amount` and fee-tier thresholds must use the same smallest-unit denomination.
+Integer division drops any fractional smallest unit, so the charged fee is
+rounded down and differs from the exact percentage by less than one smallest
+unit. For example, a 150 bps fee on 900 units is 13 units, with 887 units net.
+Settlement records must use the exact fee and net returned by the calculator.
+
 ## Development
 
 ### Prerequisites

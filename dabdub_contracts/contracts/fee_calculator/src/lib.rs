@@ -131,6 +131,12 @@ impl FeeCalculatorContract {
             .unwrap_or(DEFAULT_MIN_FEE_BPS)
     }
 
+    pub fn set_settlement_caller(env: Env, caller: Address, settlement_caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        env.storage().instance().set(&DataKey::SettlementCaller, &settlement_caller);
+    }
+
     pub fn get_fee_tiers(env: Env) -> Vec<FeeTier> {
         // `__constructor` always validates and stores `FeeTiers`, so for any
         // live contract instance the tiers are guaranteed to be present.
