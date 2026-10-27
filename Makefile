@@ -12,7 +12,7 @@ CONTRACTS := admin_auth admin_timelock batch_payments escrow fee_calculator fee_
 
 .PHONY: all build build-optimised check-wasm-size wasm-size-report test integration-test verify-deployment lint lint-clippy lint-fmt lint-audit \
         $(addprefix build-,$(CONTRACTS)) $(addprefix test-,$(CONTRACTS)) \
-        local-testnet-start local-testnet-stop local-testnet-deploy
+        deploy-testnet local-testnet-start local-testnet-stop local-testnet-deploy
 
 all: build
 
@@ -23,6 +23,7 @@ help:
 	@echo "  make clean              Remove all build artifacts"
 	@echo "  make check-wasm-size    Enforce 64KB WASM size budget on all contracts"
 	@echo "  make help               Show this help message"
+	@echo "  make deploy-testnet     Build and deploy all contracts to Stellar testnet"
 	@echo ""
 	@echo "Local Soroban testnet targets:"
 	@echo "  make local-testnet-start   Start local Soroban testnet (Docker)"
@@ -63,6 +64,9 @@ local-testnet-stop:
 
 local-testnet-deploy:
 	./scripts/deploy-local-testnet.sh
+
+deploy-testnet:
+	./scripts/deploy-testnet.sh
 
 # Run all lint checks in sequence. Stops on the first failure with a clear
 # message identifying which check failed.
