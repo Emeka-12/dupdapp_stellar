@@ -44,7 +44,7 @@ fn deploy_escrow(
             usdc,
             &DEFAULT_PAYMENT_TTL,
             &registry,
-            emergency_signers,
+            emergency_signers.clone(),
             emergency_treasury,
             &EMERGENCY_COOLDOWN_LEDGERS,
         ),
@@ -89,6 +89,7 @@ fn setup_env() -> Setup {
     let client = PaymentEscrowContractClient::new(&env, &contract_id);
 
     token::StellarAssetClient::new(&env, &usdc).mint(&customer, &1_000_000_000i128);
+    token::StellarAssetClient::new(&env, &xlm).mint(&customer, &1_000_000_000i128);
 
     (
         env,
@@ -333,6 +334,33 @@ fn test_partial_release_multiple_steps() {
     let token_client = token::Client::new(&env, &usdc);
     assert_eq!(token_client.balance(&merchant), 250_000_000);
     assert_eq!(token_client.balance(&contract_id), 0);
+}
+
+#[test]
+fn test_partial_release_xlm_payment() {
+    let (env, client, contract_id, admin, customer, merchant, _usdc, xlm, ..) = setup_env();
+    let payment_id = make_id(&env, 57);
+    let amount = 300_000_000i128;
+
+    client.deposit(
+        &customer,
+        &payment_id,
+        &merchant,
+        &amount,
+        &DEFAULT_PAYMENT_TTL,
+        &AssetType::Xlm,
+    );
+    client.release_partial(&admin, &payment_id, &120_000_000i128);
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.asset_type, AssetType::Xlm);
+    assert_eq!(payment.status, PaymentStatus::Pending);
+    assert_eq!(payment.released_amount, 120_000_000);
+    assert_eq!(client.get_balance(&payment_id), 180_000_000);
+
+    let token_client = token::Client::new(&env, &xlm);
+    assert_eq!(token_client.balance(&merchant), 120_000_000);
+    assert_eq!(token_client.balance(&contract_id), 180_000_000);
 }
 
 #[test]
@@ -586,7 +614,7 @@ fn test_set_registry_unauthorized() {
     let random = Address::generate(&env);
     let registry = Address::generate(&env);
 
-    client.set_registry(&random, &Some(registry));
+    client.set_registry(&random, &Some(registry), &None);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +627,7 @@ fn test_set_registry_unauthorized() {
 #[test]
 fn test_deposit_allowed_when_registry_approved() {
     let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    registry.register_merchant(&admin, &merchant, &String::from_str(&env, "approved"));
     registry.set_kyc_status(&admin, &merchant, &true);
 
     let payment_id = make_id(&env, 42);
@@ -619,7 +648,8 @@ fn test_deposit_allowed_when_registry_approved() {
 #[test]
 #[should_panic(expected = "Merchant is not approved")]
 fn test_deposit_blocked_when_kyc_not_verified() {
-    let (env, escrow, _registry, _admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    registry.register_merchant(&admin, &merchant, &String::from_str(&env, "unverified"));
     let payment_id = make_id(&env, 43);
 
     escrow.deposit(
@@ -636,6 +666,7 @@ fn test_deposit_blocked_when_kyc_not_verified() {
 #[should_panic(expected = "Merchant is not approved")]
 fn test_deposit_blocked_when_merchant_suspended() {
     let (env, escrow, registry, admin, customer, merchant, _usdc, ..) = setup_with_registry();
+    registry.register_merchant(&admin, &merchant, &String::from_str(&env, "suspended"));
     registry.set_kyc_status(&admin, &merchant, &true);
     registry.suspend_merchant(&admin, &merchant);
 
@@ -823,99 +854,209 @@ fn test_dispute_after_partial_release_resolves_to_merchant() {
     assert_eq!(token_client.balance(&contract_id), 0);
 }
 
-// ── Issue #1236: TTL extension ────────────────────────────────────────────────
-
 #[test]
-fn test_payment_accessible_after_ttl_extension() {
-    let (
-        env,
-        client,
-        _contract_id,
-        _admin,
-        customer,
-        merchant,
-        _usdc,
-        _xlm,
-        _es1,
-        _es2,
-        _es3,
-        _treasury,
-    ) = setup_env();
+fn test_dispute_deadline_and_automatic_customer_refund() {
+    let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 58);
+    let amount = 250_000_000i128;
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, amount);
 
-    let payment_id = BytesN::from_array(&env, &[99u8; 32]);
-    client.deposit(
+    client.release_partial(&admin, &payment_id, &100_000_000i128);
+    let dispute_ledger = env.ledger().sequence();
+    client.dispute(
         &customer,
         &payment_id,
-        &merchant,
-        &500_000_000i128,
-        &100u32,
-        &AssetType::Usdc,
+        &String::from_str(&env, "partial delivery"),
     );
 
-    // Simulate many ledgers passing (but within MAX_TTL_LEDGERS after deposit).
-    env.ledger().with_mut(|li| {
-        li.sequence_number += 50;
-    });
-
-    // Reading the payment should succeed and extend the TTL in the process.
     let payment = client.get_payment(&payment_id);
-    assert_eq!(payment.status, PaymentStatus::Pending);
-    assert_eq!(payment.amount, 500_000_000);
+    let deadline = dispute_ledger + crate::DEFAULT_DISPUTE_RESOLUTION_DELAY_LEDGERS;
+    assert_eq!(payment.dispute_resolution_deadline, deadline);
+    assert_eq!(payment.status, PaymentStatus::Disputed);
 
-    // Further ledger advancement should still allow access because TTL was extended.
-    env.ledger().with_mut(|li| {
-        li.sequence_number += 50;
-    });
-    let payment2 = client.get_payment(&payment_id);
-    assert_eq!(payment2.status, PaymentStatus::Pending);
+    env.ledger().set_sequence_number(deadline);
+    assert!(client.try_auto_resolve_dispute(&payment_id).is_err());
+    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Disputed);
+
+    env.ledger().set_sequence_number(deadline + 1);
+    client.auto_resolve_dispute(&payment_id);
+
+    let payment = client.get_payment(&payment_id);
+    assert_eq!(payment.status, PaymentStatus::Expired);
+    assert_eq!(payment.released_amount, amount);
+    assert_eq!(client.get_balance(&payment_id), 0);
+
+    let token_client = token::Client::new(&env, &usdc);
+    assert_eq!(token_client.balance(&merchant), 100_000_000);
+    assert_eq!(token_client.balance(&customer), 1_000_000_000);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    assert!(client.try_auto_resolve_dispute(&payment_id).is_err());
 }
 
-// ── Issue #1246: escrow property-based test ───────────────────────────────────
+#[test]
+fn test_admin_can_resolve_dispute_before_deadline() {
+    let (env, client, _contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 59);
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 100_000_000i128);
+    client.dispute(
+        &customer,
+        &payment_id,
+        &String::from_str(&env, "admin review"),
+    );
 
-proptest! {
-    /// escrow remaining_amount is always non-negative after any partial release.
-    #[test]
-    fn prop_escrow_remaining_non_negative(
-        total in 1i128..500_000_000i128,
-        release_amount in 1i128..500_000_000i128,
-    ) {
-        // Ensure release_amount <= total to satisfy the contract invariant.
-        let release_amount = release_amount.min(total);
+    let payment = client.get_payment(&payment_id);
+    assert!(env.ledger().sequence() < payment.dispute_resolution_deadline);
+    client.resolve_dispute(&admin, &payment_id, &customer);
 
-        let env = Env::default();
-        env.mock_all_auths();
-        env.ledger().set_sequence_number(10);
-        env.ledger().with_mut(|li| {
-            li.min_persistent_entry_ttl = 600_000;
-            li.max_entry_ttl = 600_000;
-        });
+    assert_eq!(client.get_payment(&payment_id).status, PaymentStatus::Expired);
+}
 
-        let admin = Address::generate(&env);
-        let customer = Address::generate(&env);
-        let merchant = Address::generate(&env);
-        let token_admin = Address::generate(&env);
+#[test]
+fn test_admin_cannot_resolve_dispute_after_deadline() {
+    let (env, client, contract_id, admin, customer, merchant, usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 61);
+    let amount = 100_000_000i128;
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, amount);
+    client.dispute(
+        &customer,
+        &payment_id,
+        &String::from_str(&env, "resolution timeout"),
+    );
 
-        let usdc = env.register_stellar_asset_contract_v2(token_admin.clone()).address();
-        let xlm = env.register_stellar_asset_contract_v2(token_admin).address();
+    let deadline = client.get_payment(&payment_id).dispute_resolution_deadline;
+    env.ledger().set_sequence_number(deadline + 1);
+    assert!(client
+        .try_resolve_dispute(&admin, &payment_id, &merchant)
+        .is_err());
+    client.auto_resolve_dispute(&payment_id);
 
-        let es1 = Address::generate(&env);
-        let es2 = Address::generate(&env);
-        let es3 = Address::generate(&env);
-        let treasury = Address::generate(&env);
-        let emergency_signers = soroban_sdk::vec![&env, es1, es2, es3];
+    let token_client = token::Client::new(&env, &usdc);
+    assert_eq!(token_client.balance(&customer), 1_000_000_000);
+    assert_eq!(token_client.balance(&merchant), 0);
+    assert_eq!(token_client.balance(&contract_id), 0);
+}
 
-        let contract_id = deploy_escrow(&env, &admin, &xlm, &usdc, None, &emergency_signers, &treasury);
-        let client = PaymentEscrowContractClient::new(&env, &contract_id);
+#[test]
+#[should_panic(expected = "Dispute is not open")]
+fn test_auto_resolve_requires_open_dispute() {
+    let (env, client, _contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
+    let payment_id = make_id(&env, 60);
+    deposit_default_ttl(&client, &customer, &payment_id, &merchant, 100_000_000i128);
+    client.auto_resolve_dispute(&payment_id);
+}
 
-        token::StellarAssetClient::new(&env, &usdc).mint(&customer, &total);
+// Business expiry and ledger-entry archival must not be confused. Keep the
+// normal short SDK storage defaults so these tests fail without deposit's TTL
+// extensions, rather than masking the bug with a long initial storage lifetime.
+#[test]
+fn test_max_ttl_payment_accessible_before_and_at_expiry() {
+    use soroban_sdk::testutils::storage::{Instance, Persistent};
+    let (env, client, contract_id, _admin, customer, merchant, _usdc, ..) = setup_env();
+    let start = env.ledger().sequence();
+    let ttl = client.get_max_ttl_ledgers();
+    assert_eq!(ttl, crate::DEFAULT_MAX_TTL_LEDGERS);
+    let id = make_id(&env, 101);
+    client.deposit(&customer, &id, &merchant, &100, &ttl, &AssetType::Usdc);
+    env.as_contract(&contract_id, || {
+        assert!(
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::DataKey::Payment(id.clone()))
+                >= ttl + 1
+        );
+        assert!(env.storage().instance().get_ttl() >= ttl + 1);
+    });
+    // Cover both the issue's absolute ledger and the relative lifetime boundary.
+    for ledger in [ttl - 1, start + ttl - 1, start + ttl, start + ttl + 1] {
+        env.ledger().set_sequence_number(ledger);
+        let payment = client.get_payment(&id);
+        assert_eq!(payment.expiry, start + ttl);
+        assert_eq!(payment.status, PaymentStatus::Pending);
+        assert_eq!(client.get_balance(&id), 100);
+    }
+}
 
-        let payment_id = BytesN::from_array(&env, &[42u8; 32]);
-        client.deposit(&customer, &payment_id, &merchant, &total, &50u32, &AssetType::Usdc);
+#[test]
+fn test_max_ttl_rejects_early_refund_and_allows_refund_after_expiry() {
+    let (env, client, contract_id, _admin, customer, merchant, usdc, ..) = setup_env();
+    let ttl = client.get_max_ttl_ledgers();
+    let expiry = env.ledger().sequence() + ttl;
+    let id = make_id(&env, 102);
+    client.deposit(&customer, &id, &merchant, &100, &ttl, &AssetType::Usdc);
+    // The token is an independent contract. Its maintenance is not escrow's
+    // responsibility; keep this fixture's token state live for the ledger jump.
+    env.as_contract(&usdc, || {
+        env.storage().instance().extend_ttl(ttl + 1, ttl + 1);
+        for owner in [&contract_id, &customer] {
+            let key = (soroban_sdk::symbol_short!("Balance"), owner.clone());
+            env.storage().persistent().extend_ttl(&key, ttl + 1, ttl + 1);
+        }
+    });
+    env.ledger().set_sequence_number(expiry);
+    assert!(client.try_refund(&id).is_err());
+    assert_eq!(client.get_payment(&id).status, PaymentStatus::Pending);
+    env.ledger().set_sequence_number(expiry + 1);
+    client.refund(&id);
+    assert_eq!(client.get_payment(&id).status, PaymentStatus::Expired);
+    assert_eq!(client.get_balance(&id), 0);
+}
 
-        client.release_partial(&admin, &payment_id, &release_amount);
+#[test]
+fn test_max_ttl_admin_change_is_prospective_and_does_not_shorten_storage() {
+    use soroban_sdk::testutils::storage::{Instance, Persistent};
+    let (env, client, contract_id, admin, customer, merchant, _usdc, ..) = setup_env();
+    let ttl = client.get_max_ttl_ledgers();
+    let id = make_id(&env, 103);
+    client.deposit(&customer, &id, &merchant, &100, &ttl, &AssetType::Usdc);
+    let expiry = client.get_expiry(&id);
+    client.set_max_ttl_ledgers(&admin, &100);
+    assert!(client
+        .try_deposit(
+            &customer,
+            &make_id(&env, 104),
+            &merchant,
+            &100,
+            &101,
+            &AssetType::Usdc
+        )
+        .is_err());
+    client.deposit(
+        &customer,
+        &make_id(&env, 105),
+        &merchant,
+        &100,
+        &100,
+        &AssetType::Usdc,
+    );
+    assert_eq!(client.get_expiry(&id), expiry);
+    env.as_contract(&contract_id, || {
+        assert!(
+            env.storage()
+                .persistent()
+                .get_ttl(&crate::DataKey::Payment(id.clone()))
+                >= ttl + 1
+        );
+        assert!(env.storage().instance().get_ttl() >= ttl + 1);
+    });
+}
 
-        let remaining = client.get_balance(&payment_id);
-        prop_assert!(remaining >= 0, "remaining_amount must be non-negative");
-        prop_assert_eq!(remaining, total - release_amount);
+#[test]
+fn test_max_ttl_storage_limit_rejects_deposit_before_moving_funds() {
+    let (env, client, _contract_id, admin, customer, merchant, usdc, ..) = setup_env();
+    let limit = env.storage().max_ttl();
+    client.set_max_ttl_ledgers(&admin, &u32::MAX);
+    let balance = token::Client::new(&env, &usdc).balance(&customer);
+    for ttl in [limit, u32::MAX] {
+        assert!(client
+            .try_deposit(
+                &customer,
+                &make_id(&env, 106),
+                &merchant,
+                &100,
+                &ttl,
+                &AssetType::Usdc
+            )
+            .is_err());
+        assert_eq!(token::Client::new(&env, &usdc).balance(&customer), balance);
     }
 }

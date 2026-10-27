@@ -2,24 +2,46 @@
 
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, Env, Vec};
 
-const BPS_DENOM: i128 = 10_000;
+const BPS_DENOMINATOR: i128 = 10_000;
+const MAX_FEE_RECIPIENTS: u32 = 10;
+const RECIPIENT_UPDATE_DELAY_LEDGERS: u32 = 17_280;
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeeRecipient {
+    pub address: Address,
+    pub share_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FeePayout {
+    pub address: Address,
+    pub amount: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingRecipientUpdate {
+    pub recipients: Vec<FeeRecipient>,
+    pub execute_after: u32,
+}
 
 #[contracttype]
 enum DataKey {
     Admin,
-    Treasury,
-    LpAddress,
-    LpShareBps,
+    Recipients,
     UsdcToken,
+    AllowedCaller,
+    PendingRecipients,
 }
 
 #[contracttype]
 struct FeeDistributedEvent {
-    treasury_amount: i128,
-    lp_amount: i128,
-    lp_share_bps: i128,
+    total_amount: i128,
+    payouts: Vec<FeePayout>,
 }
 
 #[contract]
@@ -30,91 +52,229 @@ impl FeeDistributorContract {
     pub fn __constructor(
         env: Env,
         admin: Address,
-        treasury: Address,
-        lp_address: Address,
-        lp_share_bps: i128,
+        recipients: Vec<FeeRecipient>,
         usdc_token: Address,
+        allowed_caller: Address,
     ) {
-        assert!(lp_share_bps >= 0 && lp_share_bps <= BPS_DENOM, "bps out of range");
+        Self::validate_recipients(&recipients);
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::Treasury, &treasury);
-        env.storage().instance().set(&DataKey::LpAddress, &lp_address);
-        env.storage().instance().set(&DataKey::LpShareBps, &lp_share_bps);
-        env.storage().instance().set(&DataKey::UsdcToken, &usdc_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::Recipients, &recipients);
+        env.storage()
+            .instance()
+            .set(&DataKey::UsdcToken, &usdc_token);
+        env.storage()
+            .instance()
+            .set(&DataKey::AllowedCaller, &allowed_caller);
     }
 
-    /// Splits `total_fee` between treasury and LP atomically.
-    /// Caller must have pre-approved this contract to transfer `total_fee` tokens.
-    pub fn distribute(env: Env, caller: Address, total_fee: i128) {
+    /// Pull and split a fee atomically. The final recipient receives any
+    /// integer-division remainder so the full amount is always distributed.
+    pub fn distribute(env: Env, caller: Address, total_amount: i128) {
         caller.require_auth();
-        assert!(total_fee > 0, "total_fee must be > 0");
+        Self::require_allowed_caller(&env, &caller);
+        assert!(total_amount > 0, "total_amount must be > 0");
 
-        let lp_share_bps: i128 = env.storage().instance().get(&DataKey::LpShareBps).unwrap();
-        let treasury: Address = env.storage().instance().get(&DataKey::Treasury).unwrap();
-        let lp_address: Address = env.storage().instance().get(&DataKey::LpAddress).unwrap();
+        let recipients: Vec<FeeRecipient> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Recipients)
+            .expect("recipients not configured");
         let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).unwrap();
-
-        let lp_amount = total_fee
-            .checked_mul(lp_share_bps)
-            .expect("overflow")
-            .checked_div(BPS_DENOM)
-            .expect("div zero");
-        let treasury_amount = total_fee.checked_sub(lp_amount).expect("underflow");
-
-        // Pull full fee from caller into this contract first, then push out.
-        // Both outbound transfers happen in the same tx — atomicity is guaranteed
-        // by Soroban's all-or-nothing execution model.
         let token = token::Client::new(&env, &usdc_token);
-        token.transfer(&caller, &env.current_contract_address(), &total_fee);
+        let contract_address = env.current_contract_address();
+        token.transfer(&caller, &contract_address, &total_amount);
 
-        if treasury_amount > 0 {
-            token.transfer(&env.current_contract_address(), &treasury, &treasury_amount);
+        let mut payouts = Vec::new(&env);
+        let mut distributed = 0i128;
+        for (index, recipient) in recipients.iter().enumerate() {
+            let payout_amount = if index + 1 == recipients.len() as usize {
+                total_amount
+                    .checked_sub(distributed)
+                    .expect("distributed amount exceeds total")
+            } else {
+                Self::share_amount(total_amount, recipient.share_bps)
+            };
+
+            if payout_amount > 0 {
+                token.transfer(&contract_address, &recipient.address, &payout_amount);
+            }
+            distributed = distributed
+                .checked_add(payout_amount)
+                .expect("payout total overflow");
+            payouts.push_back(FeePayout {
+                address: recipient.address,
+                amount: payout_amount,
+            });
         }
-        if lp_amount > 0 {
-            token.transfer(&env.current_contract_address(), &lp_address, &lp_amount);
-        }
+        assert_eq!(
+            distributed, total_amount,
+            "recipient shares must total 10000 bps"
+        );
 
         env.events().publish(
             ("FEE_DISTRIBUTOR", "fee_distributed"),
             FeeDistributedEvent {
-                treasury_amount,
-                lp_amount,
-                lp_share_bps,
+                total_amount,
+                payouts,
             },
         );
     }
 
-    /// Update LP share ratio. Admin-only.
-    pub fn set_lp_share(env: Env, caller: Address, bps: i128) {
+    /// Schedule a recipient-list change. The change cannot be applied for
+    /// 17,280 ledgers (~24 hours); no current recipient configuration changes
+    /// until `apply_recipients` is called after that deadline.
+    pub fn schedule_recipients(env: Env, caller: Address, recipients: Vec<FeeRecipient>) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
-        assert!(bps >= 0 && bps <= BPS_DENOM, "bps out of range");
-        env.storage().instance().set(&DataKey::LpShareBps, &bps);
+        Self::validate_recipients(&recipients);
+        let execute_after = env
+            .ledger()
+            .sequence()
+            .checked_add(RECIPIENT_UPDATE_DELAY_LEDGERS)
+            .expect("recipient update deadline overflow");
+        let pending = PendingRecipientUpdate {
+            recipients: recipients.clone(),
+            execute_after,
+        };
+        env.storage().instance().extend_ttl(
+            RECIPIENT_UPDATE_DELAY_LEDGERS,
+            RECIPIENT_UPDATE_DELAY_LEDGERS,
+        );
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingRecipients, &pending);
+        env.events()
+            .publish(("FEE_DISTRIBUTOR", "recipients_update_scheduled"), pending);
     }
 
-    /// Update treasury address. Admin-only.
-    pub fn set_treasury(env: Env, caller: Address, treasury: Address) {
+    /// Apply a previously scheduled update once its timelock has elapsed.
+    pub fn apply_recipients(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
-        env.storage().instance().set(&DataKey::Treasury, &treasury);
+        let pending: PendingRecipientUpdate = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingRecipients)
+            .expect("no pending recipient update");
+        if env.ledger().sequence() < pending.execute_after {
+            panic!("recipient update timelock has not elapsed");
+        }
+
+        let previous: Vec<FeeRecipient> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Recipients)
+            .expect("recipients not configured");
+        env.storage()
+            .instance()
+            .set(&DataKey::Recipients, &pending.recipients);
+        env.storage().instance().remove(&DataKey::PendingRecipients);
+        env.events().publish(
+            ("FEE_DISTRIBUTOR", "recipients_updated"),
+            (previous, pending.recipients),
+        );
     }
 
-    /// Update LP address. Admin-only.
-    pub fn set_lp_address(env: Env, caller: Address, lp_address: Address) {
+    /// Cancel a queued update before it is applied.
+    pub fn cancel_recipients_update(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_admin(&env, &caller);
-        env.storage().instance().set(&DataKey::LpAddress, &lp_address);
+        if !env.storage().instance().has(&DataKey::PendingRecipients) {
+            panic!("no pending recipient update");
+        }
+        env.storage().instance().remove(&DataKey::PendingRecipients);
+        env.events()
+            .publish(("FEE_DISTRIBUTOR", "recipients_update_cancelled"), ());
     }
 
-    pub fn get_config(env: Env) -> (Address, Address, i128) {
-        let treasury: Address = env.storage().instance().get(&DataKey::Treasury).unwrap();
-        let lp_address: Address = env.storage().instance().get(&DataKey::LpAddress).unwrap();
-        let lp_share_bps: i128 = env.storage().instance().get(&DataKey::LpShareBps).unwrap();
-        (treasury, lp_address, lp_share_bps)
+    /// Rotate the address permitted to invoke `distribute`. Admin-only.
+    pub fn set_allowed_caller(env: Env, caller: Address, allowed_caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        let old_allowed_caller: Address = env.storage().instance().get(&DataKey::AllowedCaller).unwrap();
+        env.storage().instance().set(&DataKey::AllowedCaller, &allowed_caller);
+        env.events().publish(
+            ("FEE_DISTRIBUTOR", "allowed_caller_updated"),
+            (old_allowed_caller, allowed_caller),
+        );
+    }
+
+    /// Rotate the admin address. Admin-only.
+    pub fn transfer_admin(env: Env, caller: Address, new_admin: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        let previous: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+        env.events()
+            .publish(("FEE_DISTRIBUTOR", "admin_updated"), (previous, new_admin));
+    }
+
+    pub fn get_recipients(env: Env) -> Vec<FeeRecipient> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Recipients)
+            .expect("recipients not configured")
+    }
+
+    pub fn get_pending_recipients(env: Env) -> Option<PendingRecipientUpdate> {
+        env.storage().instance().get(&DataKey::PendingRecipients)
+    }
+
+    pub fn get_allowed_caller(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::AllowedCaller)
+            .unwrap()
+    }
+
+    fn validate_recipients(recipients: &Vec<FeeRecipient>) {
+        if recipients.len() == 0 || recipients.len() > MAX_FEE_RECIPIENTS {
+            panic!(
+                "recipient count must be between 1 and {}",
+                MAX_FEE_RECIPIENTS
+            );
+        }
+        let mut total_share = 0u32;
+        for (index, recipient) in recipients.iter().enumerate() {
+            if recipient.share_bps == 0 {
+                panic!("recipient share must be greater than zero");
+            }
+            for previous in recipients.iter().take(index) {
+                if recipient.address == previous.address {
+                    panic!("recipient addresses must be unique");
+                }
+            }
+            total_share = total_share
+                .checked_add(recipient.share_bps)
+                .expect("recipient share total overflow");
+        }
+        if total_share != BPS_DENOMINATOR as u32 {
+            panic!("recipient shares must total 10000 bps");
+        }
+    }
+
+    fn share_amount(amount: i128, share_bps: u32) -> i128 {
+        let whole = amount / BPS_DENOMINATOR;
+        let remainder = amount % BPS_DENOMINATOR;
+        whole
+            .checked_mul(share_bps as i128)
+            .and_then(|value| value.checked_add(remainder * share_bps as i128 / BPS_DENOMINATOR))
+            .expect("recipient payout overflow")
     }
 
     fn require_admin(env: &Env, caller: &Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         assert!(caller == &admin, "not admin");
+    }
+
+    fn require_allowed_caller(env: &Env, caller: &Address) {
+        let allowed: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::AllowedCaller)
+            .unwrap();
+        assert!(caller == &allowed, "caller not allowed");
     }
 }

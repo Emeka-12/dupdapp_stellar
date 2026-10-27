@@ -75,6 +75,7 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
+      admin_auth_id: ${{ steps.deploy.outputs.admin_auth_id }}
       admin_timelock_id: ${{ steps.deploy.outputs.admin_timelock_id }}
       batch_payments_id: ${{ steps.deploy.outputs.batch_payments_id }}
       fee_calculator_id: ${{ steps.deploy.outputs.fee_calculator_id }}
@@ -84,6 +85,7 @@ jobs:
       multisig_admin_id: ${{ steps.deploy.outputs.multisig_admin_id }}
       payment_escrow_id: ${{ steps.deploy.outputs.payment_escrow_id }}
       payment_request_id: ${{ steps.deploy.outputs.payment_request_id }}
+      platform_stats_id: ${{ steps.deploy.outputs.platform_stats_id }}
       rbac_access_id: ${{ steps.deploy.outputs.rbac_access_id }}
       reconciliation_id: ${{ steps.deploy.outputs.reconciliation_id }}
       settlement_ledger_id: ${{ steps.deploy.outputs.settlement_ledger_id }}
@@ -120,9 +122,8 @@ jobs:
           RBAC_SUPER_ADMIN: ${{ vars.TESTNET_RBAC_SUPER_ADMIN }}
           XLM_TOKEN: ${{ vars.TESTNET_XLM_TOKEN }}
           USDC_TOKEN: ${{ vars.TESTNET_USDC_TOKEN }}
-          TREASURY: ${{ vars.TESTNET_TREASURY }}
-          LP_ADDRESS: ${{ vars.TESTNET_LP_ADDRESS }}
-          LP_SHARE_BPS: ${{ vars.TESTNET_LP_SHARE_BPS }}
+          FEE_DISTRIBUTOR_RECIPIENTS: ${{ vars.TESTNET_FEE_DISTRIBUTOR_RECIPIENTS }}
+          FEE_DISTRIBUTOR_ALLOWED_CALLER: ${{ vars.TESTNET_FEE_DISTRIBUTOR_ALLOWED_CALLER }}
           FEE_TIERS: ${{ vars.TESTNET_FEE_TIERS }}
           MULTISIG_ADMIN_1: ${{ vars.TESTNET_MULTISIG_ADMIN_1 }}
           MULTISIG_ADMIN_2: ${{ vars.TESTNET_MULTISIG_ADMIN_2 }}
@@ -133,6 +134,8 @@ jobs:
           EMERGENCY_COOLDOWN_LEDGERS: ${{ vars.TESTNET_EMERGENCY_COOLDOWN_LEDGERS }}
           CONFIRMATION_COUNT: ${{ vars.TESTNET_CONFIRMATION_COUNT }}
           REGISTRY_ADDRESS: ${{ vars.TESTNET_REGISTRY_ADDRESS }}
+          BATCH_PAYMENTS_MIN_AMOUNT: ${{ vars.TESTNET_BATCH_PAYMENTS_MIN_AMOUNT }}
+          BATCH_PAYMENTS_MAX_AMOUNT: ${{ vars.TESTNET_BATCH_PAYMENTS_MAX_AMOUNT }}
         run: |
           set -euo pipefail
 
@@ -154,9 +157,8 @@ jobs:
           require RBAC_SUPER_ADMIN
           require XLM_TOKEN
           require USDC_TOKEN
-          require TREASURY
-          require LP_ADDRESS
-          require LP_SHARE_BPS
+          require FEE_DISTRIBUTOR_RECIPIENTS
+          require FEE_DISTRIBUTOR_ALLOWED_CALLER
           require FEE_TIERS
           require MULTISIG_ADMIN_1
           require MULTISIG_ADMIN_2
@@ -166,6 +168,8 @@ jobs:
           require EMERGENCY_TREASURY
           require EMERGENCY_COOLDOWN_LEDGERS
           require CONFIRMATION_COUNT
+          require BATCH_PAYMENTS_MIN_AMOUNT
+          require BATCH_PAYMENTS_MAX_AMOUNT
           [ "$missing" -eq 0 ] || exit 1
 
           # ------------------------------------------------------------------
@@ -196,11 +200,38 @@ jobs:
           }
 
           # --- no constructor ------------------------------------------------
-          deploy_contract batch_payments        wasm/batch_payments.wasm
           deploy_contract liquidity_router      wasm/liquidity_router.wasm
           deploy_contract payment_request       wasm/payment_request.wasm
 
+          # liquidity_router doesn't use Soroban's `__constructor` convention,
+          # so its one-time admin setup has to be invoked as a separate call
+          # right after deploy — otherwise the instance sits with no
+          # DataKey::Admin set until someone calls `initialize` out-of-band.
+          stellar contract invoke \
+            --id "$liquidity_router_id" \
+            --source deployer \
+            --network testnet \
+            -- initialize \
+            --admin "$DEPLOY_ADMIN"
+
+          # --- no constructor, but has a required one-time init() -----------
+          # batch_payments has no __constructor; its storage (admin, min/max
+          # amount limits) is only set up by calling init() after deploy. Skip
+          # this and every create_batch/set_limits/get_limits call panics with
+          # "contract not initialized".
+          deploy_contract batch_payments        wasm/batch_payments.wasm
+          stellar contract invoke \
+            --id "$batch_payments_id" \
+            --source deployer \
+            --network testnet \
+            -- init \
+            --admin "$DEPLOY_ADMIN" \
+            --min_amount "$BATCH_PAYMENTS_MIN_AMOUNT" \
+            --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"
+
           # --- admin only ----------------------------------------------------
+          deploy_contract admin_auth            wasm/admin_auth.wasm \
+            --super_admin "$DEPLOY_ADMIN"
           deploy_contract admin_timelock        wasm/admin_timelock.wasm \
             --admin "$DEPLOY_ADMIN"
           deploy_contract merchant_registry     wasm/merchant_registry.wasm \
@@ -213,6 +244,8 @@ jobs:
             --admin "$DEPLOY_ADMIN"
           deploy_contract rbac_access           wasm/rbac_access.wasm \
             --super_admin "$RBAC_SUPER_ADMIN"
+          deploy_contract platform_stats        wasm/platform_stats.wasm \
+            --admin "$DEPLOY_ADMIN"
 
           # --- multi-argument constructors -----------------------------------
           deploy_contract stellar_confirmations wasm/stellar_confirmations.wasm \
@@ -229,12 +262,12 @@ jobs:
             --admin "$DEPLOY_ADMIN" \
             --tiers "$FEE_TIERS"
 
+          # FEE_DISTRIBUTOR_RECIPIENTS is a JSON array of FeeRecipient structs.
           deploy_contract fee_distributor       wasm/fee_distributor.wasm \
             --admin "$DEPLOY_ADMIN" \
-            --treasury "$TREASURY" \
-            --lp_address "$LP_ADDRESS" \
-            --lp_share_bps "$LP_SHARE_BPS" \
-            --usdc_token "$USDC_TOKEN"
+            --recipients "$FEE_DISTRIBUTOR_RECIPIENTS" \
+            --usdc_token "$USDC_TOKEN" \
+            --allowed_caller "$FEE_DISTRIBUTOR_ALLOWED_CALLER"
 
           # payment_escrow takes an Option<Address> registry. Default it to the
           # merchant_registry just deployed, so the two are wired together in
@@ -256,6 +289,7 @@ jobs:
           echo "### Testnet contract IDs" >> "$GITHUB_STEP_SUMMARY"
           echo "| Contract | ID |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| admin_auth | ${{ steps.deploy.outputs.admin_auth_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| admin_timelock | ${{ steps.deploy.outputs.admin_timelock_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| batch_payments | ${{ steps.deploy.outputs.batch_payments_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| fee_calculator | ${{ steps.deploy.outputs.fee_calculator_id }} |" >> "$GITHUB_STEP_SUMMARY"
@@ -265,6 +299,7 @@ jobs:
           echo "| multisig_admin | ${{ steps.deploy.outputs.multisig_admin_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| payment_escrow | ${{ steps.deploy.outputs.payment_escrow_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| payment_request | ${{ steps.deploy.outputs.payment_request_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| platform_stats | ${{ steps.deploy.outputs.platform_stats_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| rbac_access | ${{ steps.deploy.outputs.rbac_access_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| reconciliation | ${{ steps.deploy.outputs.reconciliation_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| settlement_ledger | ${{ steps.deploy.outputs.settlement_ledger_id }} |" >> "$GITHUB_STEP_SUMMARY"
@@ -312,9 +347,8 @@ jobs:
           RBAC_SUPER_ADMIN: ${{ vars.MAINNET_RBAC_SUPER_ADMIN }}
           XLM_TOKEN: ${{ vars.MAINNET_XLM_TOKEN }}
           USDC_TOKEN: ${{ vars.MAINNET_USDC_TOKEN }}
-          TREASURY: ${{ vars.MAINNET_TREASURY }}
-          LP_ADDRESS: ${{ vars.MAINNET_LP_ADDRESS }}
-          LP_SHARE_BPS: ${{ vars.MAINNET_LP_SHARE_BPS }}
+          FEE_DISTRIBUTOR_RECIPIENTS: ${{ vars.MAINNET_FEE_DISTRIBUTOR_RECIPIENTS }}
+          FEE_DISTRIBUTOR_ALLOWED_CALLER: ${{ vars.MAINNET_FEE_DISTRIBUTOR_ALLOWED_CALLER }}
           FEE_TIERS: ${{ vars.MAINNET_FEE_TIERS }}
           MULTISIG_ADMIN_1: ${{ vars.MAINNET_MULTISIG_ADMIN_1 }}
           MULTISIG_ADMIN_2: ${{ vars.MAINNET_MULTISIG_ADMIN_2 }}
@@ -325,6 +359,8 @@ jobs:
           EMERGENCY_COOLDOWN_LEDGERS: ${{ vars.MAINNET_EMERGENCY_COOLDOWN_LEDGERS }}
           CONFIRMATION_COUNT: ${{ vars.MAINNET_CONFIRMATION_COUNT }}
           REGISTRY_ADDRESS: ${{ vars.MAINNET_REGISTRY_ADDRESS }}
+          BATCH_PAYMENTS_MIN_AMOUNT: ${{ vars.MAINNET_BATCH_PAYMENTS_MIN_AMOUNT }}
+          BATCH_PAYMENTS_MAX_AMOUNT: ${{ vars.MAINNET_BATCH_PAYMENTS_MAX_AMOUNT }}
         run: |
           set -euo pipefail
 
@@ -346,9 +382,8 @@ jobs:
           require RBAC_SUPER_ADMIN
           require XLM_TOKEN
           require USDC_TOKEN
-          require TREASURY
-          require LP_ADDRESS
-          require LP_SHARE_BPS
+          require FEE_DISTRIBUTOR_RECIPIENTS
+          require FEE_DISTRIBUTOR_ALLOWED_CALLER
           require FEE_TIERS
           require MULTISIG_ADMIN_1
           require MULTISIG_ADMIN_2
@@ -358,6 +393,8 @@ jobs:
           require EMERGENCY_TREASURY
           require EMERGENCY_COOLDOWN_LEDGERS
           require CONFIRMATION_COUNT
+          require BATCH_PAYMENTS_MIN_AMOUNT
+          require BATCH_PAYMENTS_MAX_AMOUNT
           [ "$missing" -eq 0 ] || exit 1
 
           # ------------------------------------------------------------------
@@ -388,11 +425,38 @@ jobs:
           }
 
           # --- no constructor ------------------------------------------------
-          deploy_contract batch_payments        wasm/batch_payments.wasm
           deploy_contract liquidity_router      wasm/liquidity_router.wasm
           deploy_contract payment_request       wasm/payment_request.wasm
 
+          # liquidity_router doesn't use Soroban's `__constructor` convention,
+          # so its one-time admin setup has to be invoked as a separate call
+          # right after deploy — otherwise the instance sits with no
+          # DataKey::Admin set until someone calls `initialize` out-of-band.
+          stellar contract invoke \
+            --id "$liquidity_router_id" \
+            --source deployer \
+            --network mainnet \
+            -- initialize \
+            --admin "$DEPLOY_ADMIN"
+
+          # --- no constructor, but has a required one-time init() -----------
+          # batch_payments has no __constructor; its storage (admin, min/max
+          # amount limits) is only set up by calling init() after deploy. Skip
+          # this and every create_batch/set_limits/get_limits call panics with
+          # "contract not initialized".
+          deploy_contract batch_payments        wasm/batch_payments.wasm
+          stellar contract invoke \
+            --id "$batch_payments_id" \
+            --source deployer \
+            --network mainnet \
+            -- init \
+            --admin "$DEPLOY_ADMIN" \
+            --min_amount "$BATCH_PAYMENTS_MIN_AMOUNT" \
+            --max_amount "$BATCH_PAYMENTS_MAX_AMOUNT"
+
           # --- admin only ----------------------------------------------------
+          deploy_contract admin_auth            wasm/admin_auth.wasm \
+            --super_admin "$DEPLOY_ADMIN"
           deploy_contract admin_timelock        wasm/admin_timelock.wasm \
             --admin "$DEPLOY_ADMIN"
           deploy_contract merchant_registry     wasm/merchant_registry.wasm \
@@ -405,6 +469,8 @@ jobs:
             --admin "$DEPLOY_ADMIN"
           deploy_contract rbac_access           wasm/rbac_access.wasm \
             --super_admin "$RBAC_SUPER_ADMIN"
+          deploy_contract platform_stats        wasm/platform_stats.wasm \
+            --admin "$DEPLOY_ADMIN"
 
           # --- multi-argument constructors -----------------------------------
           deploy_contract stellar_confirmations wasm/stellar_confirmations.wasm \
@@ -421,12 +487,12 @@ jobs:
             --admin "$DEPLOY_ADMIN" \
             --tiers "$FEE_TIERS"
 
+          # FEE_DISTRIBUTOR_RECIPIENTS is a JSON array of FeeRecipient structs.
           deploy_contract fee_distributor       wasm/fee_distributor.wasm \
             --admin "$DEPLOY_ADMIN" \
-            --treasury "$TREASURY" \
-            --lp_address "$LP_ADDRESS" \
-            --lp_share_bps "$LP_SHARE_BPS" \
-            --usdc_token "$USDC_TOKEN"
+            --recipients "$FEE_DISTRIBUTOR_RECIPIENTS" \
+            --usdc_token "$USDC_TOKEN" \
+            --allowed_caller "$FEE_DISTRIBUTOR_ALLOWED_CALLER"
 
           # payment_escrow takes an Option<Address> registry. Default it to the
           # merchant_registry just deployed, so the two are wired together in
@@ -448,6 +514,7 @@ jobs:
           echo "### Mainnet contract IDs (${{ github.ref_name }})" >> "$GITHUB_STEP_SUMMARY"
           echo "| Contract | ID |" >> "$GITHUB_STEP_SUMMARY"
           echo "|---|---|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| admin_auth | ${{ steps.deploy.outputs.admin_auth_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| admin_timelock | ${{ steps.deploy.outputs.admin_timelock_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| batch_payments | ${{ steps.deploy.outputs.batch_payments_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| fee_calculator | ${{ steps.deploy.outputs.fee_calculator_id }} |" >> "$GITHUB_STEP_SUMMARY"
@@ -457,76 +524,37 @@ jobs:
           echo "| multisig_admin | ${{ steps.deploy.outputs.multisig_admin_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| payment_escrow | ${{ steps.deploy.outputs.payment_escrow_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| payment_request | ${{ steps.deploy.outputs.payment_request_id }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| platform_stats | ${{ steps.deploy.outputs.platform_stats_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| rbac_access | ${{ steps.deploy.outputs.rbac_access_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| reconciliation | ${{ steps.deploy.outputs.reconciliation_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| settlement_ledger | ${{ steps.deploy.outputs.settlement_ledger_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| slippage_protection | ${{ steps.deploy.outputs.slippage_protection_id }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| stellar_confirmations | ${{ steps.deploy.outputs.stellar_confirmations_id }} |" >> "$GITHUB_STEP_SUMMARY"
 
-      # `stellar contract deploy` installs the WASM and creates a *new* contract
-      # instance with a *new* ID. It does not touch the live contract, so the
-      # previous wording here described deploying an empty orphan while the
-      # contract holding every open escrow kept running the bad code.
+      # Informational only: this step does not perform recovery transactions.
       - name: Rollback procedure reminder
         run: |
           cat <<'ROLLBACK'
-          ================================ ROLLBACK ================================
+          See docs/deployment.md before any production recovery action.
 
-          Do NOT use `stellar contract deploy` to roll back. It creates a NEW
-          contract with a NEW ID and empty storage; the live contract — holding
-          every open escrow, the admin address and the registry pointer — keeps
-          running the bad code, and every service still points at it.
+          This workflow deploys NEW contract instances. It does not replace
+          live code, transfer existing storage/funds, or update service routing.
+          Never use `stellar contract deploy` as an in-place rollback.
 
-          payment_escrow (in-place, preserves contract ID and storage)
-          ---------------------------------------------------------------------
-          1. Install the previous release WASM to get its hash:
+          Current payment_escrow uses schedule_upgrade, get_pending_upgrade,
+          cancel_upgrade and apply_upgrade (default delay: 17,280 ledgers).
+          There is no current immediate `upgrade` entrypoint. Verify the live
+          ABI, authorized signers, pending hash and apply ledger first.
+          Earlier WASM is usable only if compatible with current storage;
+          code replacement does not undo past transfers or state migrations.
 
-               stellar contract install \
-                 --wasm <prev-release>/payment_escrow.wasm \
-                 --source deployer \
-                 --network mainnet
+          Other contracts have no executable-update path in this workspace.
+          Replacement requires an explicit state/funds migration and cutover.
 
-          2. Invoke the contract's own upgrade entrypoint with that hash:
+          multisig_admin does not pause escrow or dispatch arbitrary calls.
+          Its incident proposal is only a signal for verified off-chain
+          containment. Direct on-chain calls remain possible.
 
-               stellar contract invoke \
-                 --id <LIVE_PAYMENT_ESCROW_ID> \
-                 --source deployer \
-                 --network mainnet \
-                 -- upgrade \
-                 --caller <ADMIN_ADDRESS> \
-                 --new_wasm_hash <PREV_WASM_HASH>
-
-             `upgrade` is admin-only. If the admin is a multisig, the
-             transaction needs the required signatures.
-
-          3. Confirm the swap landed:
-
-               stellar contract invoke --id <LIVE_PAYMENT_ESCROW_ID> \
-                 --network mainnet -- get_version
-
-             `get_version` increments on every upgrade, including a downgrade —
-             it counts upgrades, it does not name the code version. Verify
-             against the WASM hash on-chain, not this number.
-
-          Every other contract — no in-place path
-          ---------------------------------------------------------------------
-          payment_escrow is the only contract in this workspace that implements
-          `upgrade`. The other 13 have no `update_current_contract_wasm`
-          entrypoint, so there is no way to swap their code in place. Rolling
-          one back means deploying the previous WASM as a new contract and then
-          repointing everything that references the old ID:
-
-            - merchant_registry's registry pointer in payment_escrow
-              (`set_registry`)
-            - the NestJS backend's configured contract addresses
-            - any other contract holding the old ID
-
-          Storage does NOT carry over. Treat this as a migration, not a
-          rollback, and plan it as one.
-
-          Previous WASM artifacts are retained for 30 days in GitHub Actions.
-
-          See docs/escrow_upgrade_procedure.md and
-          dabdub_contracts/contracts/payment_escrow/EMERGENCY_RUNBOOK.md.
-          ==========================================================================
+          Previous WASM artifacts expire after 30 days; archive recovery
+          artifacts and complete the private on-call roster before rollout.
           ROLLBACK

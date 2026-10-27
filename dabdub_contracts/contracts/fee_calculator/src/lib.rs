@@ -2,10 +2,11 @@
 
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, vec, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
 
 const LEDGERS_PER_30_DAYS: u32 = 172_800;
 const BPS_DENOMINATOR: i128 = 10_000;
+const DEFAULT_MIN_FEE_BPS: u32 = 10;
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -27,6 +28,8 @@ pub enum DataKey {
     SettlementCaller,
     Admin,
     FeeTiers,
+    MinFeeStroops,
+    MinFeeBps,
     MerchantVolume(Address),
 }
 
@@ -40,15 +43,100 @@ pub struct TierAppliedEvent {
     pub net: i128,
 }
 
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct FeeTiersUpdatedEvent {
+    pub admin: Address,
+    pub tiers: Vec<FeeTier>,
+}
+
 #[contract]
 pub struct FeeCalculatorContract;
 
 #[contractimpl]
 impl FeeCalculatorContract {
-    pub fn __constructor(env: Env, admin: Address, tiers: Vec<FeeTier>) {
+    pub fn __constructor(env: Env, admin: Address, tiers: Vec<FeeTier>, min_fee_bps: u32) {
         Self::validate_tiers(&tiers);
+        if min_fee_bps > 10_000 {
+            panic!("min_fee_bps must be <= 10000");
+        }
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::FeeTiers, &tiers);
+        env.storage().instance().set(&DataKey::MinFeeStroops, &0i128);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinFeeBps, &min_fee_bps);
+    }
+
+    pub fn set_fee_tiers(env: Env, caller: Address, tiers: Vec<FeeTier>) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        Self::validate_tiers(&tiers);
+        env.storage().instance().set(&DataKey::FeeTiers, &tiers);
+
+        env.events().publish(
+            ("FEE", "tiers_updated"),
+            FeeTiersUpdatedEvent {
+                admin: caller,
+                tiers,
+            },
+        );
+    }
+
+    pub fn set_settlement_caller(env: Env, caller: Address, settlement_caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        env.storage()
+            .instance()
+            .set(&DataKey::SettlementCaller, &settlement_caller);
+        env.events().publish(
+            ("FEE", "settlement_caller_updated"),
+            (settlement_caller,),
+        );
+    }
+
+    pub fn get_settlement_caller(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::SettlementCaller)
+    }
+
+    pub fn set_min_fee_stroops(env: Env, caller: Address, min_fee_stroops: i128) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        if min_fee_stroops < 0 {
+            panic!("min_fee_stroops must be >= 0");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MinFeeStroops, &min_fee_stroops);
+        env.events()
+            .publish(("FEE", "min_fee_stroops_updated"), (min_fee_stroops,));
+    }
+
+    pub fn get_min_fee_stroops(env: Env) -> i128 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinFeeStroops)
+            .unwrap_or(0)
+    }
+
+    pub fn set_min_fee_bps(env: Env, caller: Address, min_fee_bps: u32) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        if min_fee_bps > 10_000 {
+            panic!("min_fee_bps must be <= 10000");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MinFeeBps, &min_fee_bps);
+        env.events()
+            .publish(("FEE", "min_fee_bps_updated"), (min_fee_bps,));
+    }
+
+    pub fn get_min_fee_bps(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MinFeeBps)
+            .unwrap_or(DEFAULT_MIN_FEE_BPS)
     }
 
     pub fn set_settlement_caller(env: Env, caller: Address, settlement_caller: Address) {
@@ -57,21 +145,24 @@ impl FeeCalculatorContract {
         env.storage().instance().set(&DataKey::SettlementCaller, &settlement_caller);
     }
 
-    pub fn set_fee_tiers(env: Env, caller: Address, tiers: Vec<FeeTier>) {
-        caller.require_auth();
-        Self::require_admin(&env, &caller);
-        Self::validate_tiers(&tiers);
-        env.storage().instance().set(&DataKey::FeeTiers, &tiers);
-    }
-
     pub fn get_fee_tiers(env: Env) -> Vec<FeeTier> {
+        // `__constructor` always validates and stores `FeeTiers`, so for any
+        // live contract instance the tiers are guaranteed to be present.
         env.storage()
             .instance()
             .get(&DataKey::FeeTiers)
-            .unwrap_or(vec![&env, FeeTier { threshold_usdc: 0, fee_bps: 0 }])
+            .expect("tiers not initialized")
     }
 
-    pub fn calculate_fee(env: Env, merchant: Address, amount: i128) -> (i128, i128, u32) {
+    pub fn calculate_fee(
+        env: Env,
+        caller: Address,
+        merchant: Address,
+        amount: i128,
+    ) -> (i128, i128, u32) {
+        caller.require_auth();
+        Self::require_authorized_caller(&env, &caller);
+
         if amount <= 0 {
             panic!("amount must be > 0");
         }
@@ -79,11 +170,39 @@ impl FeeCalculatorContract {
         let volume = Self::update_and_get_volume(&env, &merchant, amount);
         let fee_bps = Self::select_fee_bps(&env, volume);
 
-        let fee = amount
+        let mut fee = amount
             .checked_mul(fee_bps as i128)
             .expect("overflow")
             .checked_div(BPS_DENOMINATOR)
             .expect("division failure");
+
+        // Enforce the minimum fee floor (in bps) so zero-bps tiers still pay.
+        let min_fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinFeeBps)
+            .unwrap_or(DEFAULT_MIN_FEE_BPS);
+        let min_fee_from_bps = amount
+            .checked_mul(min_fee_bps as i128)
+            .expect("overflow")
+            .checked_div(BPS_DENOMINATOR)
+            .expect("division failure");
+        if fee < min_fee_from_bps {
+            fee = min_fee_from_bps;
+        }
+
+        let min_fee_stroops: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinFeeStroops)
+            .unwrap_or(0);
+        if fee < min_fee_stroops {
+            fee = min_fee_stroops;
+        }
+        if fee > amount {
+            fee = amount;
+        }
+
         let net = amount.checked_sub(fee).expect("underflow");
 
         env.events().publish(
@@ -100,10 +219,15 @@ impl FeeCalculatorContract {
         (fee, net, fee_bps)
     }
 
+    /// Read-only query: returns the merchant's current 30-day windowed volume.
+    /// If the window has elapsed, the windowed (reset) value is computed in
+    /// memory and returned without writing back to storage. The actual
+    /// reset-and-persist happens in `update_and_get_volume` during
+    /// `calculate_fee`.
     pub fn get_merchant_volume(env: Env, merchant: Address) -> MerchantVolume {
         let current_ledger = env.ledger().sequence();
         let key = DataKey::MerchantVolume(merchant);
-        let mut data = env
+        let data = env
             .storage()
             .persistent()
             .get::<DataKey, MerchantVolume>(&key)
@@ -113,12 +237,13 @@ impl FeeCalculatorContract {
             });
 
         if current_ledger.saturating_sub(data.window_start_ledger) >= LEDGERS_PER_30_DAYS {
-            data.window_start_ledger = current_ledger;
-            data.volume_usdc = 0;
-            env.storage().persistent().set(&key, &data);
+            MerchantVolume {
+                window_start_ledger: current_ledger,
+                volume_usdc: 0,
+            }
+        } else {
+            data
         }
-
-        data
     }
 
     fn require_admin(env: &Env, caller: &Address) {
@@ -126,6 +251,23 @@ impl FeeCalculatorContract {
         if &admin != caller {
             panic!("Not admin");
         }
+    }
+
+    fn require_authorized_caller(env: &Env, caller: &Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        if caller == &admin {
+            return;
+        }
+        if let Some(settlement_caller) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::SettlementCaller)
+        {
+            if caller == &settlement_caller {
+                return;
+            }
+        }
+        panic!("Not authorized");
     }
 
     fn validate_tiers(tiers: &Vec<FeeTier>) {
@@ -155,6 +297,39 @@ impl FeeCalculatorContract {
         }
     }
 
+    /// Selects the applicable fee tier for the given volume using binary
+    /// search over the strictly increasing `threshold_usdc` values (guaranteed
+    /// by `validate_tiers`). Returns the `fee_bps` of the highest tier whose
+    /// threshold is `<= volume`, or the first tier's `fee_bps` if the volume is
+    /// below every threshold. This is O(log n) instead of the previous O(n)
+    /// linear scan.
+    fn select_fee_bps(env: &Env, volume: i128) -> u32 {
+        let tiers: Vec<FeeTier> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeTiers)
+            .expect("tiers not initialized");
+
+        let len = tiers.len();
+        let mut lo: u32 = 0;
+        let mut hi: u32 = len;
+
+        // Find the first index whose threshold is strictly greater than
+        // `volume`; the applicable tier is the one just before it.
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let tier = tiers.get(mid).unwrap();
+            if tier.threshold_usdc <= volume {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+
+        let idx = if lo == 0 { 0 } else { lo - 1 };
+        tiers.get(idx).unwrap().fee_bps
+    }
+
     fn update_and_get_volume(env: &Env, merchant: &Address, amount: i128) -> i128 {
         let current_ledger = env.ledger().sequence();
         let key = DataKey::MerchantVolume(merchant.clone());
@@ -172,24 +347,30 @@ impl FeeCalculatorContract {
             data.volume_usdc = 0;
         }
 
-        data.volume_usdc = data.volume_usdc.checked_add(amount).expect("volume overflow");
+        data.volume_usdc = data.volume_usdc.checked_add(amount).expect("overflow");
         env.storage().persistent().set(&key, &data);
         data.volume_usdc
     }
-
+    /// Selects the applicable fee tier for the given volume.
+    ///
+    /// Tiers are validated as strictly increasing by `validate_tiers`, so the
+    /// `threshold_usdc` array is sorted. We binary-search for the highest tier
+    /// whose threshold is `<= volume`, which is O(log n) instead of the
+    /// previous O(n) linear scan.
     fn select_fee_bps(env: &Env, volume: i128) -> u32 {
-        let tiers: Vec<FeeTier> = env.storage().instance().get(&DataKey::FeeTiers).unwrap();
-        let mut selected_bps = tiers.get(0).unwrap().fee_bps;
+        let tiers: Vec<FeeTier> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeTiers)
+            .expect("tiers not initialized");
 
-        for i in 0..tiers.len() {
-            let tier = tiers.get(i).unwrap();
-            if volume >= tier.threshold_usdc {
-                selected_bps = tier.fee_bps;
+        let idx = if lo == 0 { 0 } else { lo - 1 };
+        tiers.get(idx).unwrap().fee_bps
             } else {
-                break;
+                hi = mid;
             }
         }
-
-        selected_bps
+        let idx = if lo == 0 { 0 } else { lo - 1 };
+        tiers.get(idx).unwrap().fee_bps
     }
 }

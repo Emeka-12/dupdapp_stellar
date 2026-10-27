@@ -2,7 +2,11 @@
 
 mod test;
 
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env};
+use soroban_sdk::{
+    contract, contractevent, contractimpl, contracttype, Address, Env, Vec,
+};
+
+// ── Role ────────────────────────────────────────────────────────────────────
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -13,12 +17,9 @@ pub enum Role {
     SuperAdmin,
 }
 
-#[contracttype]
-#[derive(Clone)]
-pub enum DataKey {
-    Role(Address),
-    SuperAdminCount,
-}
+use soroban_sdk::{
+    contract, contractevent, contractimpl, contracttype, Address, Env, Vec,
+};
 
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
@@ -115,7 +116,10 @@ impl RbacAccessContract {
             }
             env.storage()
                 .persistent()
-                .set(&DataKey::SuperAdminCount, &(count - 1));
+                .set(
+                    &DataKey::SuperAdminCount,
+                    &count.checked_sub(1).expect("SuperAdminCount underflow"),
+                );
         }
 
         env.storage().persistent().remove(&key);
@@ -134,13 +138,11 @@ impl RbacAccessContract {
 
     /// Sensitive operation requiring minimum `OperationsAdmin`.
     ///
-    /// # RBAC guard usage
-    /// Functions that mutate financial state (e.g. `payment_escrow::release`,
-    /// `payment_escrow::release_partial`, `settlement_ledger::record_settlement`)
-    /// should require at minimum `OperationsAdmin`. Replace the single-address
-    /// `require_admin` guard in those contracts with a cross-contract call to
-    /// `require_role(OperationsAdmin)` once the rbac_access contract address is
-    /// wired into their constructors.
+    /// Reference implementation of the role-gating pattern: it enforces
+    /// `require_auth()` plus the minimum role and performs no business logic.
+    /// There is intentionally no state mutation or event emission -- integrators
+    /// should model real sensitive operations on this pattern and add their own
+    /// logic after the gate.
     pub fn execute_operations_task(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::OperationsAdmin);
@@ -148,20 +150,23 @@ impl RbacAccessContract {
 
     /// Sensitive operation requiring minimum `ComplianceAdmin`.
     ///
-    /// # RBAC guard usage
-    /// Functions that enforce compliance rules (e.g. merchant allowlist checks,
-    /// dispute oversight) should require at minimum `ComplianceAdmin`.
+    /// Reference implementation of the role-gating pattern: it enforces
+    /// `require_auth()` plus the minimum role and performs no business logic.
+    /// There is intentionally no state mutation or event emission -- integrators
+    /// should model real sensitive operations on this pattern and add their own
+    /// logic after the gate.
     pub fn execute_compliance_task(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::ComplianceAdmin);
     }
 
-    /// Read-only operation — accessible by any assigned role.
+    /// Sensitive operation requiring minimum `ReadOnly`.
     ///
-    /// # RBAC guard usage
-    /// Query/getter functions (e.g. `payment_escrow::get_payment`,
-    /// `settlement_ledger::get_settlement`) should require at minimum `ReadOnly`
-    /// so that off-chain monitoring accounts cannot perform mutations.
+    /// Reference implementation of the role-gating pattern: it enforces
+    /// `require_auth()` plus the minimum role and performs no business logic.
+    /// There is intentionally no state mutation or event emission -- integrators
+    /// should model real sensitive operations on this pattern and add their own
+    /// logic after the gate.
     pub fn execute_read_task(env: Env, caller: Address) {
         caller.require_auth();
         Self::require_role(&env, &caller, Role::ReadOnly);
@@ -175,11 +180,9 @@ impl RbacAccessContract {
             panic!("cannot transfer to self");
         }
 
+        // `require_role` above already guarantees the caller has an assigned
+        // role record, so no separate existence check is needed here.
         let caller_key = DataKey::Role(caller.clone());
-        if !env.storage().persistent().has(&caller_key) {
-            panic!("caller is not an admin");
-        }
-
         env.storage()
             .persistent()
             .set(&DataKey::Role(new_admin.clone()), &Role::SuperAdmin);
