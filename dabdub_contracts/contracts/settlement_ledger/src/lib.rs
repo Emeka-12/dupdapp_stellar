@@ -220,3 +220,8 @@ impl SettlementLedger {
         }
     }
 }
+
+/// Helper to build a default NGN currency string — used in migration tests.
+pub fn default_currency(env: &Env) -> String {
+    String::from_str(env, DEFAULT_CURRENCY)
+}
