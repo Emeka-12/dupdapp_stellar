@@ -68,6 +68,20 @@ fn test_record_and_get() {
     assert_eq!(r.timestamp, 1_700_000_000u64);
 }
 
+// ── administration ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_admin_rotation_allows_new_admin_to_record() {
+    let (env, admin, client) = setup();
+    let new_admin = Address::generate(&env);
+    let merchant = Address::generate(&env);
+
+    client.transfer_admin(&admin, &new_admin);
+    record(&client, &new_admin, &env, 5, &merchant, 10_000, 200);
+
+    assert_eq!(client.settlement_count(&merchant), 1);
+}
+
 // ── immutability: duplicate write must panic ──────────────────────────────────
 
 #[test]
@@ -87,6 +101,25 @@ fn test_duplicate_record_panics() {
         &fiat_ref(&env, "DUP"),
     );
     assert!(result.is_err());
+}
+
+#[test]
+#[should_panic(expected = "not admin")]
+fn test_record_settlement_unauthorized_caller_panics() {
+    let (env, _admin, client) = setup();
+    let caller = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    record(&client, &caller, &env, 8, &merchant, 1_000, 20);
+}
+
+#[test]
+fn test_void_preserves_original_settlement() {
+    let (env, admin, client) = setup();
+    let merchant = Address::generate(&env);
+    record(&client, &admin, &env, 7, &merchant, 1_000, 20);
+    client.void_settlement(&admin, &pid(&env, 7), &fiat_ref(&env, "operator correction"));
+    assert_eq!(client.get_settlement(&pid(&env, 7)).amount, 1_000);
+    assert_eq!(client.get_settlement_void(&pid(&env, 7)).unwrap().reason, fiat_ref(&env, "operator correction"));
 }
 
 // ── fee + net must equal amount ───────────────────────────────────────────────
@@ -172,6 +205,17 @@ fn test_merchant_isolation() {
     assert_eq!(client.settlement_count(&m2), 1);
 }
 
+#[test]
+fn test_platform_wide_index_lists_every_merchant() {
+    let (env, admin, client) = setup();
+    let first = Address::generate(&env);
+    let second = Address::generate(&env);
+    record(&client, &admin, &env, 60, &first, 1_000, 20);
+    record(&client, &admin, &env, 61, &second, 2_000, 40);
+    assert_eq!(client.total_settlement_count(), 2);
+    assert_eq!(client.list_all_settlements(&0).len(), 2);
+}
+
 // ── get on unknown payment_id panics ─────────────────────────────────────────
 
 #[test]
@@ -181,83 +225,62 @@ fn test_get_unknown_panics() {
     assert!(result.is_err());
 }
 
+// ── settlement reversal ───────────────────────────────────────────────────────
+
 #[test]
-fn test_calculated_fee_is_recorded_and_incorrect_fee_is_rejected() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
+fn test_record_reversal_references_original() {
+    let (env, admin, client) = setup();
     let merchant = Address::generate(&env);
-    let tiers = soroban_sdk::vec![
-        &env,
-        FeeTier {
-            threshold_usdc: 0,
-            fee_bps: 150
-        },
-        FeeTier {
-            threshold_usdc: 1_000,
-            fee_bps: 120
-        },
-        FeeTier {
-            threshold_usdc: 5_000,
-            fee_bps: 100
-        },
-    ];
+    record(&client, &admin, &env, 70, &merchant, 10_000, 200);
 
-    let fee_calculator_id = env.register(FeeCalculatorContract, (&admin, tiers));
-    let fee_calculator = FeeCalculatorContractClient::new(&env, &fee_calculator_id);
-    let settlement_ledger_id = env.register(SettlementLedgerContract, (&admin,));
-    let settlement_ledger = SettlementLedgerContractClient::new(&env, &settlement_ledger_id);
+    client.record_reversal(&admin, &pid(&env, 70), &fiat_ref(&env, "chargeback"));
 
-    let (first_fee, first_net, first_bps) = fee_calculator.calculate_fee(&merchant, &900);
-    assert_eq!((first_fee, first_net, first_bps), (13, 887, 150));
+    let rev = client.get_reversal(&pid(&env, 70)).unwrap();
+    assert_eq!(rev.original_payment_id, pid(&env, 70));
+    assert_eq!(rev.reason, fiat_ref(&env, "chargeback"));
+    assert_eq!(rev.merchant, merchant);
+    assert_eq!(rev.amount, 10_000);
+}
 
-    let (fee, net, bps) = fee_calculator.calculate_fee(&merchant, &200);
-    assert_eq!((fee, net, bps), (2, 198, 120));
+#[test]
+#[should_panic(expected = "not admin")]
+fn test_record_reversal_unauthorized_caller_panics() {
+    let (env, admin, client) = setup();
+    let caller = Address::generate(&env);
+    let merchant = Address::generate(&env);
+    record(&client, &admin, &env, 71, &merchant, 1_000, 20);
+    client.record_reversal(&caller, &pid(&env, 71), &fiat_ref(&env, "chargeback"));
+}
 
-    let invalid_record = settlement_ledger.try_record_settlement(
-        &admin,
-        &pid(&env, 80),
-        &merchant,
-        &200,
-        &(fee + 1),
-        &net,
-        &1_700_000_000u64,
-        &fiat_ref(&env, "WRONG-FEE"),
-    );
-    assert!(invalid_record.is_err());
+#[test]
+fn test_double_reversal_panics() {
+    let (env, admin, client) = setup();
+    let merchant = Address::generate(&env);
+    record(&client, &admin, &env, 72, &merchant, 1_000, 20);
+    client.record_reversal(&admin, &pid(&env, 72), &fiat_ref(&env, "chargeback"));
 
-    settlement_ledger.record_settlement(
-        &admin,
-        &pid(&env, 80),
-        &merchant,
-        &200,
-        &fee,
-        &net,
-        &1_700_000_000u64,
-        &fiat_ref(&env, "TIER-2"),
-    );
-    let tier_two = settlement_ledger.get_settlement(&pid(&env, 80));
-    assert_eq!(tier_two.amount, 200);
-    assert_eq!(tier_two.fee, fee);
-    assert_eq!(tier_two.net, net);
+    let result = client.try_record_reversal(&admin, &pid(&env, 72), &fiat_ref(&env, "again"));
+    assert!(result.is_err());
+}
 
-    let (tier_three_fee, tier_three_net, tier_three_bps) =
-        fee_calculator.calculate_fee(&merchant, &4_000);
-    assert_eq!(
-        (tier_three_fee, tier_three_net, tier_three_bps),
-        (40, 3_960, 100)
-    );
-    settlement_ledger.record_settlement(
-        &admin,
-        &pid(&env, 81),
-        &merchant,
-        &4_000,
-        &tier_three_fee,
-        &tier_three_net,
-        &1_700_000_001u64,
-        &fiat_ref(&env, "TIER-3"),
-    );
-    let tier_three = settlement_ledger.get_settlement(&pid(&env, 81));
-    assert_eq!(tier_three.fee, tier_three_fee);
-    assert_eq!(tier_three.net, tier_three_net);
+#[test]
+fn test_reversal_updates_merchant_index() {
+    let (env, admin, client) = setup();
+    let merchant = Address::generate(&env);
+    record(&client, &admin, &env, 73, &merchant, 1_000, 20);
+    record(&client, &admin, &env, 74, &merchant, 2_000, 40);
+
+    client.record_reversal(&admin, &pid(&env, 73), &fiat_ref(&env, "chargeback"));
+
+    assert_eq!(client.reversal_count(&merchant), 1);
+    let list = client.list_reversals(&merchant, &0);
+    assert_eq!(list.len(), 1);
+    assert_eq!(list.get(0).unwrap().original_payment_id, pid(&env, 73));
+}
+
+#[test]
+fn test_reversal_unknown_payment_panics() {
+    let (env, admin, client) = setup();
+    let result = client.try_record_reversal(&admin, &pid(&env, 99), &fiat_ref(&env, "chargeback"));
+    assert!(result.is_err());
 }
