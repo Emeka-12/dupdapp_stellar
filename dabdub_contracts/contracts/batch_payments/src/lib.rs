@@ -3,16 +3,22 @@
 mod test;
 
 use soroban_sdk::{
-    contract, contractclient, contractimpl, contracttype, vec, xdr::ToXdr, Address, BytesN, Env,
-    String, Vec,
+    contract, contractclient, contractimpl, contracttype, vec, xdr::ToXdr, Address, Bytes, BytesN,
+    Env, String, Vec,
 };
 
-const DEFAULT_MAX_BATCH_SIZE: u32 = 20;
-const MAX_BATCHES_PER_LEDGER: u32 = 5;
+const MAX_BATCH_SIZE: u32 = 100;
+const DEFAULT_MAX_BATCH_SIZE: u32 = MAX_BATCH_SIZE;
 
 /// ABI version of this contract. Bump on every WASM upgrade.
 const CONTRACT_VERSION: u32 = 1;
 
+/// Storage strategy (see docs/storage-strategy.md):
+/// - Instance storage holds configuration and small counters (Admin, MinAmount,
+///   MaxAmount, MaxBatchSize, Counter, Version). It is shared across the contract
+///   instance and its TTL is extended together with the contract, so it must stay small.
+/// - Persistent storage holds per-payment records (Payment(id)), which grow with
+///   usage and must carry their own TTL extension so they are not archived.
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
@@ -23,6 +29,7 @@ enum DataKey {
     Counter,
     MerchantBatchCount(Address),
     Version,
+    RegistryContract,
     Payment(BytesN<32>),
 }
 
@@ -42,8 +49,8 @@ pub struct PaymentInput {
 #[contracttype]
 #[derive(Clone, Debug)]
 pub struct PaymentRecord {
-    /// Unique payment ID (32-byte hash derived from merchant, a per-contract
-    /// counter, and the payment's contents — see issue #1024).
+    /// Unique payment ID (32-byte hash derived from merchant, the ledger
+    /// sequence, and a per-contract counter — see issue #1024).
     pub id: BytesN<32>,
     pub amount: i128,
     pub memo: String,
@@ -77,11 +84,21 @@ impl BatchPaymentContract {
 
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage().instance().set(&DataKey::MinAmount, &min_amount);
-        env.storage().instance().set(&DataKey::MaxAmount, &max_amount);
-        env.storage().instance().set(&DataKey::MaxBatchSize, &DEFAULT_MAX_BATCH_SIZE);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinAmount, &min_amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAmount, &max_amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxBatchSize, &DEFAULT_MAX_BATCH_SIZE);
         env.storage().instance().set(&DataKey::Counter, &0u64);
         env.storage().instance().set(&DataKey::Version, &CONTRACT_VERSION);
+        env.events().publish(
+            ("BATCH_PAYMENTS", "initialized"),
+            (admin, min_amount, max_amount),
+        );
     }
 
     /// Returns the ABI version of this contract.
@@ -108,8 +125,12 @@ impl BatchPaymentContract {
             .unwrap_or_else(|| panic!("contract not initialized"));
         admin.require_auth();
 
-        env.storage().instance().set(&DataKey::MinAmount, &min_amount);
-        env.storage().instance().set(&DataKey::MaxAmount, &max_amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinAmount, &min_amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAmount, &max_amount);
         env.events().publish(
             (soroban_sdk::Symbol::new(&env, "LimitsUpdated"),),
             (min_amount, max_amount),
@@ -118,8 +139,8 @@ impl BatchPaymentContract {
 
     /// Update the maximum batch size. Admin-only.
     pub fn set_max_batch_size(env: Env, new_max: u32) {
-        if new_max == 0 {
-            panic!("max batch size must be > 0");
+        if new_max == 0 || new_max > MAX_BATCH_SIZE {
+            panic!("max batch size must be between 1 and {}", MAX_BATCH_SIZE);
         }
 
         let admin: Address = env
@@ -129,11 +150,30 @@ impl BatchPaymentContract {
             .unwrap_or_else(|| panic!("contract not initialized"));
         admin.require_auth();
 
-        env.storage().instance().set(&DataKey::MaxBatchSize, &new_max);
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxBatchSize, &new_max);
         env.events().publish(
             (soroban_sdk::Symbol::new(&env, "MaxBatchSizeUpdated"),),
             (new_max,),
         );
+    }
+
+    /// Set or clear the merchant registry used to gate batch creation.
+    pub fn set_registry(env: Env, registry: Option<Address>) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| panic!("contract not initialized"));
+        admin.require_auth();
+        match registry {
+            Some(address) => env
+                .storage()
+                .instance()
+                .set(&DataKey::RegistryContract, &address),
+            None => env.storage().instance().remove(&DataKey::RegistryContract),
+        }
     }
 
     /// Create up to max_batch_size payments atomically in a single contract invocation.
@@ -210,7 +250,7 @@ impl BatchPaymentContract {
 
         // ── Creation pass ─────────────────────────────────────────────────────
         let mut payment_ids: Vec<BytesN<32>> = vec![&env];
-        let mut counter: u64 = env
+        let counter: u64 = env
             .storage()
             .instance()
             .get(&DataKey::Counter)
@@ -232,14 +272,7 @@ impl BatchPaymentContract {
                 amount: item.amount,
                 memo: item.memo.clone(),
                 merchant: merchant.clone(),
-            };
-            env.storage().persistent().set(&DataKey::Payment(id_bytes.clone()), &record);
-
-            let record = PaymentRecord {
-                id: id_bytes.clone(),
-                amount: item.amount,
-                memo: item.memo.clone(),
-                merchant: merchant.clone(),
+                customer: item.customer.clone(),
             };
             env.storage()
                 .persistent()
@@ -261,17 +294,40 @@ impl BatchPaymentContract {
         }
 
         let final_counter = counter + count as u64;
-        env.storage().instance().set(&DataKey::Counter, &final_counter);
-        let next_batch_count = if count_ledger == current_ledger {
-            batches_in_ledger + 1
-        } else {
-            1
-        };
         env.storage()
-            .persistent()
-            .set(&batch_count_key, &(current_ledger, next_batch_count));
+            .instance()
+            .set(&DataKey::Counter, &final_counter);
 
         payment_ids
     }
 
-    /// Returns the on-chain
+    /// Returns the configured upper bound for a single atomic batch.
+    pub fn max_batch_size(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE)
+    }
+
+    /// Return the persisted payment record, if the ID exists.
+    pub fn get_payment(env: Env, payment_id: BytesN<32>) -> Option<PaymentRecord> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Payment(payment_id))
+    }
+
+    /// Return the currently configured minimum and maximum payment amounts.
+    pub fn get_limits(env: Env) -> (i128, i128) {
+        let min_amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinAmount)
+            .unwrap_or_else(|| panic!("contract not initialized"));
+        let max_amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxAmount)
+            .unwrap_or_else(|| panic!("contract not initialized"));
+        (min_amount, max_amount)
+    }
+}

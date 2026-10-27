@@ -89,6 +89,10 @@ impl FeeCalculatorContract {
         env.storage()
             .instance()
             .set(&DataKey::SettlementCaller, &settlement_caller);
+        env.events().publish(
+            ("FEE", "settlement_caller_updated"),
+            (settlement_caller,),
+        );
     }
 
     pub fn get_settlement_caller(env: Env) -> Option<Address> {
@@ -104,6 +108,8 @@ impl FeeCalculatorContract {
         env.storage()
             .instance()
             .set(&DataKey::MinFeeStroops, &min_fee_stroops);
+        env.events()
+            .publish(("FEE", "min_fee_stroops_updated"), (min_fee_stroops,));
     }
 
     pub fn get_min_fee_stroops(env: Env) -> i128 {
@@ -122,6 +128,8 @@ impl FeeCalculatorContract {
         env.storage()
             .instance()
             .set(&DataKey::MinFeeBps, &min_fee_bps);
+        env.events()
+            .publish(("FEE", "min_fee_bps_updated"), (min_fee_bps,));
     }
 
     pub fn get_min_fee_bps(env: Env) -> u32 {
@@ -129,6 +137,12 @@ impl FeeCalculatorContract {
             .instance()
             .get(&DataKey::MinFeeBps)
             .unwrap_or(DEFAULT_MIN_FEE_BPS)
+    }
+
+    pub fn set_settlement_caller(env: Env, caller: Address, settlement_caller: Address) {
+        caller.require_auth();
+        Self::require_admin(&env, &caller);
+        env.storage().instance().set(&DataKey::SettlementCaller, &settlement_caller);
     }
 
     pub fn get_fee_tiers(env: Env) -> Vec<FeeTier> {
