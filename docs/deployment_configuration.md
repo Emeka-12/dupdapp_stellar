@@ -60,6 +60,23 @@ Two constructors take container types, which the Stellar CLI expects as JSON.
 ["GA…", "GB…", "GC…"]
 ```
 
+`…_FEE_DISTRIBUTOR_RECIPIENTS` — `Vec<FeeRecipient>`. Shares must total exactly
+10,000 basis points, addresses must be unique, and at most 10 recipients are
+accepted:
+
+```json
+[
+  { "address": "G…", "share_bps": 7000 },
+  { "address": "G…", "share_bps": 2000 },
+  { "address": "G…", "share_bps": 1000 }
+]
+```
+
+`fee_distributor` recipient changes require a 17,280-ledger (~24 hour)
+timelock. The admin schedules a complete replacement list; once the deadline is
+reached, the admin applies it. The fee distributor and its existing deployments
+must be redeployed to adopt this constructor and storage schema.
+
 `…_FEE_TIERS` — `Vec<FeeTier>`. Field names must match the struct in
 `dabdub_contracts/contracts/fee_calculator/src/lib.rs`:
 
